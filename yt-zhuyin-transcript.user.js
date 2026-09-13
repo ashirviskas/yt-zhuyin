@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube 注音 transcript (zh-TW + zhuyin, pinyin optional, English)
 // @namespace    local.yt-zhuyin
-// @version      0.2.1
+// @version      0.2.3
 // @description  Side panel: traditional Chinese captions segmented into words with zhuyin from a Taiwan (McBopomofo) dictionary, optional pinyin derived from the zhuyin, English line, click-to-seek.
 // @match        https://www.youtube.com/*
 // @homepageURL  https://github.com/ashirviskas/yt-zhuyin
@@ -35,8 +35,10 @@
     wordGap: true,              // visible gap between dictionary words
     restoreCaptions: true,      // put player captions back to whatever they were after harvesting
     panelMaxHeight: '60vh',
-    hanFontSize: '22px',
-    zhuyinFontSize: '10px',
+    zhuyinLayout: 'side',       // 'side' (textbook: vertical column right of the character) | 'top' (horizontal, above)
+    hanFontSize: '30px',
+    zhuyinFontSize: '14px',     // side layout: ~half the character height is the readable minimum on a 96-dpi screen
+    zhuyinTopFontSize: '13px',
     debug: true,
   };
 
@@ -188,9 +190,11 @@
   .ytz-zh{line-height:1.15}
   .ytz-word{display:inline-flex;align-items:center;margin:0 ${CFG.wordGap ? 7 : 2}px 4px 0;vertical-align:middle;border-bottom:1px dotted transparent}
   #ytz-panel.ytz-wordgap .ytz-word{border-bottom-color:var(--yt-spec-10-percent-layer,#444)}
-  .ytz-cc{display:inline-flex;align-items:center;margin-right:2px}
+  .ytz-cc{display:inline-flex;align-items:center;margin-right:3px}
   .ytz-han{font-size:${CFG.hanFontSize};line-height:1}
-  .ytz-zy{writing-mode:vertical-lr;text-orientation:upright;font-size:${CFG.zhuyinFontSize};line-height:1;margin-left:1px;letter-spacing:-1px;color:var(--yt-spec-text-secondary,#aaa);white-space:nowrap}
+  .ytz-zy{writing-mode:vertical-lr;text-orientation:upright;font-size:${CFG.zhuyinFontSize};line-height:1;margin-left:2px;color:var(--yt-spec-text-secondary,#aaa);white-space:nowrap;font-family:"Noto Sans TC","PingFang TC","BopomofoRuby","Microsoft JhengHei",sans-serif}
+  #ytz-panel.ytz-top .ytz-cc{flex-direction:column;align-items:center;margin-right:6px}
+  #ytz-panel.ytz-top .ytz-zy{writing-mode:horizontal-tb;text-orientation:mixed;font-size:${CFG.zhuyinTopFontSize};margin:0 0 2px 0;letter-spacing:.5px}
   .ytz-zy.ytz-poly{color:#e0b040}
   .ytz-zy.ytz-missing{color:#ff5555}
   .ytz-other{font-size:${CFG.hanFontSize};line-height:1;vertical-align:middle;margin-right:2px}
@@ -237,15 +241,17 @@
     panel.classList.toggle('ytz-nopy', !CFG.showPinyin);
     panel.classList.toggle('ytz-noen', !CFG.showEnglish);
     panel.classList.toggle('ytz-wordgap', CFG.wordGap);
+    panel.classList.toggle('ytz-top', CFG.zhuyinLayout === 'top');
 
     const enModes = Object.keys(en).filter(k => en[k]?.length);
     const enMode0 = enModes.includes(CFG.englishDefault) ? CFG.englishDefault : enModes[0];
     const head = document.createElement('div'); head.id = 'ytz-head';
-    head.innerHTML = `<span class="ytz-title">${meta}</span>
-      <label><input type="checkbox" id="ytz-py" ${CFG.showPinyin ? 'checked' : ''}>pinyin</label>
-      <label><input type="checkbox" id="ytz-en" ${CFG.showEnglish ? 'checked' : ''}>English</label>
-      <select id="ytz-enmode">${enModes.map(m => `<option value="${m}" ${m === enMode0 ? 'selected' : ''}>${m === 'native' ? 'native EN' : 'auto-translated'}</option>`).join('')}</select>
-      <label><input type="checkbox" id="ytz-follow" ${CFG.follow ? 'checked' : ''}>follow</label>`;
+    const title = document.createElement('span'); title.className = 'ytz-title'; title.textContent = meta;
+    const mkToggle = (id, label, checked) => { const l = document.createElement('label'); const i = document.createElement('input');
+      i.type = 'checkbox'; i.id = id; i.checked = checked; l.append(i, document.createTextNode(label)); return l; };
+    const enSel = document.createElement('select'); enSel.id = 'ytz-enmode';
+    for (const m of enModes) { const o = document.createElement('option'); o.value = m; o.textContent = m === 'native' ? 'native EN' : 'auto-translated'; o.selected = m === enMode0; enSel.appendChild(o); }
+    head.append(title, mkToggle('ytz-top', 'zhuyin on top', CFG.zhuyinLayout === 'top'), mkToggle('ytz-py', 'pinyin', CFG.showPinyin), mkToggle('ytz-en', 'English', CFG.showEnglish), enSel, mkToggle('ytz-follow', 'follow', CFG.follow));
     panel.appendChild(head);
 
     const body = document.createElement('div'); body.id = 'ytz-body';
@@ -265,6 +271,7 @@
     const applyEn = (mode) => { const lines = en[mode] ?? []; enEls.forEach((el, i) => el.textContent = lines[i] ?? ''); };
     applyEn(enMode0);
 
+    head.querySelector('#ytz-top').onchange = e => panel.classList.toggle('ytz-top', e.target.checked);
     head.querySelector('#ytz-py').onchange = e => panel.classList.toggle('ytz-nopy', !e.target.checked);
     head.querySelector('#ytz-en').onchange = e => panel.classList.toggle('ytz-noen', !e.target.checked);
     head.querySelector('#ytz-follow').onchange = e => { CFG.follow = e.target.checked; };
@@ -290,7 +297,7 @@
     let panel = document.getElementById('ytz-panel');
     if (!panel) { panel = document.createElement('div'); panel.id = 'ytz-panel';
       (document.querySelector('#secondary-inner') || document.querySelector('#secondary'))?.prepend(panel); }
-    panel.innerHTML = `<div id="ytz-status">${msg}</div>`;
+    panel.replaceChildren(); const d = document.createElement('div'); d.id = 'ytz-status'; d.textContent = msg; panel.appendChild(d);
   }
 
   // ---------------------------------------------------------------- main
