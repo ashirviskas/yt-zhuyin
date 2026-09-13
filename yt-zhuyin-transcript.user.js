@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube 注音 transcript (zh-TW + zhuyin, pinyin optional, English)
 // @namespace    local.yt-zhuyin
-// @version      0.5.3
+// @version      0.6.0
 // @description  Side panel: traditional Chinese captions segmented into words with zhuyin from a Taiwan (McBopomofo) dictionary, optional pinyin derived from the zhuyin, English line, click-to-seek.
 // @match        https://www.youtube.com/*
 // @homepageURL  https://github.com/ashirviskas/yt-zhuyin
@@ -308,6 +308,7 @@
   }
 
   function buildPanel(segs, en, meta, D, actions) {
+    // actions.sources: [{value,label}], actions.source: current value, actions.setSource(value)
     injectCss();
     document.getElementById('ytz-panel')?._cleanup?.();
     document.getElementById('ytz-panel')?.remove();
@@ -326,7 +327,13 @@
     const enSel = document.createElement('select'); enSel.id = 'ytz-enmode';
     for (const m of enModes) { const o = document.createElement('option'); o.value = m; o.textContent = ({ native: 'native EN', translate: 'auto-translated', local: 'local MT' })[m] ?? m; o.selected = m === enMode0; enSel.appendChild(o); }
     const mkBtn = (label, title, fn) => { const b = document.createElement('button'); b.textContent = label; b.title = title; b.onclick = fn; return b; };
-    head.append(title, mkToggle('ytz-top', 'zhuyin on top', CFG.zhuyinLayout === 'top'), mkToggle('ytz-py', 'pinyin', CFG.showPinyin), mkToggle('ytz-en', 'English', CFG.showEnglish), enSel, mkToggle('ytz-follow', 'follow', CFG.follow),
+    if (actions.sources?.length) {
+      const src = document.createElement('select'); src.title = 'transcript source';
+      for (const o of actions.sources) { const e = document.createElement('option'); e.value = o.value; e.textContent = o.label; e.selected = o.value === actions.source; src.appendChild(e); }
+      src.onchange = e => actions.setSource(e.target.value);
+      head.append(title, src);
+    } else head.append(title);
+    head.append(mkToggle('ytz-top', 'zhuyin on top', CFG.zhuyinLayout === 'top'), mkToggle('ytz-py', 'pinyin', CFG.showPinyin), mkToggle('ytz-en', 'English', CFG.showEnglish), enSel, mkToggle('ytz-follow', 'follow', CFG.follow),
       mkBtn('↻', 'Refetch this video\'s transcript', actions.reload), mkBtn('✕ cache', 'Clear all cached transcripts and refetch', actions.clearAll), ...(actions.extra ?? []));
     panel.appendChild(head);
 
@@ -395,12 +402,17 @@
     panel._cleanup = () => clearInterval(timer);
   }
 
-  function showStatus(msg) {
+  function showStatus(msg, buttons = []) {
     injectCss();
     let panel = document.getElementById('ytz-panel');
     if (!panel) { panel = document.createElement('div'); panel.id = 'ytz-panel';
       (document.querySelector('#secondary-inner') || document.querySelector('#secondary'))?.prepend(panel); }
-    panel.replaceChildren(); const d = document.createElement('div'); d.id = 'ytz-status'; d.textContent = msg; panel.appendChild(d);
+    panel.replaceChildren(); const d = document.createElement('div'); d.id = 'ytz-status'; d.textContent = msg;
+    if (buttons.length) {
+      const row = document.createElement('div'); row.id = 'ytz-head'; row.style.borderTop = '1px solid var(--yt-spec-10-percent-layer,#333)'; row.style.borderBottom = 'none';
+      for (const [label, fn] of buttons) { const b = document.createElement('button'); b.textContent = label; b.onclick = fn; row.appendChild(b); }
+      panel.append(d, row);
+    } else panel.appendChild(d);
   }
 
   // Re-chunk whisper word timestamps into short lines. Works at character level:
@@ -492,12 +504,14 @@
     };
   }
   // ---------------------------------------------------------------- local ASR fallback
-  async function asrPath(vid, D, tracks) {
+  async function asrPath(vid, D, tracks, srcSel = {}) {
     const url = `${CFG.asrServer}/transcript/${vid}`;
     const actions = {
       reload: async () => { try { await fetch(url, { method: 'DELETE' }); } catch {} currentVideo = null; init(); },
       clearAll: async () => { await cacheClear(); currentVideo = null; init(); },
+      ...srcSel,
     };
+    const retryBtn = ['retry', () => { currentVideo = null; init(); }];
     let shown = 0, lastJ = null;
     const tr = makeLocalTranslator(vid);
     // line-length slider: re-chunks instantly from cached words and rebuilds the panel
@@ -522,8 +536,8 @@
     while (currentVideo === vid) {
       let j;
       try { const r = await fetch(url); j = await r.json(); }
-      catch (e) { showStatus(`No captions on this video, and the local ASR server at ${CFG.asrServer} is not reachable. Start asr_server.py, or set CFG.asrServer = null.`); return; }
-      if (j.status === 'error') { showStatus('ASR failed: ' + j.error); return; }
+      catch (e) { showStatus(`No usable captions, and the local ASR server at ${CFG.asrServer} is not reachable. Start asr_server.py, or set CFG.asrServer = null.`, [retryBtn]); return; }
+      if (j.status === 'error') { showStatus('ASR failed: ' + j.error, [retryBtn, ['retry (drop server cache)', actions.reload]]); return; }
       lastJ = j;
       const segs = j.words?.length ? chunkWords(j.words, D) : (j.segs ?? []);
       if (segs.length && (segs.length !== shown || j.done)) {
@@ -538,7 +552,7 @@
         shown = segs.length;
         tr.update(segs);
       } else if (!segs.length) {
-        showStatus(`No captions on this video. Local ASR: ${j.status === 'paused' ? 'resuming' : j.status}${j.progress ? ` ${Math.round(j.progress * 100)}%` : ''}…`);
+        showStatus(`Local ASR: ${j.status === 'paused' ? 'resuming' : j.status}${j.progress ? ` ${Math.round(j.progress * 100)}%` : ''}…`);
       }
       if (j.done) return;
       await sleep(CFG.asrPollMs);
@@ -547,6 +561,7 @@
 
   // ---------------------------------------------------------------- main
   let currentVideo = null;
+  const forced = {};   // vid -> 'asr' | caption languageCode (user override from the source selector)
   async function init() {
     if (location.pathname !== '/watch') return;
     const vid = new URLSearchParams(location.search).get('v');
@@ -561,18 +576,26 @@
     if (!player) { showStatus('Player not ready.'); return; }
     await waitFor(() => document.querySelector('#secondary-inner, #secondary'));
 
+    // captions can show up in the player response a moment after the video id does
+    await waitFor(() => player.getPlayerResponse()?.captions?.playerCaptionsTracklistRenderer?.captionTracks?.length, { tries: 12, every: 250 });
     const cap = player.getPlayerResponse().captions?.playerCaptionsTracklistRenderer;
     const tracks = cap?.captionTracks ?? [];
     log('tracks', tracks.map(t => t.languageCode + (t.kind === 'asr' ? '(asr)' : '')));
-    if (!tracks.length) { if (CFG.asrServer) return asrPath(vid, D, tracks); showStatus('No caption tracks.'); return; }
-    const zh = pickZhTrack(tracks);
-    if (!zh) { if (CFG.asrServer) return asrPath(vid, D, tracks); showStatus('No Chinese track. Available: ' + tracks.map(trackName).join(', ')); return; }
+    const sources = [...tracks.map(t => ({ value: t.languageCode, label: `${trackName(t)}${t.kind === 'asr' ? ' (auto)' : ''}` })), { value: 'asr', label: 'whisper (local)' }];
+    const setSource = (v) => { forced[vid] = v; currentVideo = null; init(); };
+    const retryBtn = ['retry', () => { currentVideo = null; init(); }];
+    const whisperBtn = ['use whisper', () => setSource('asr')];
+    if (forced[vid] === 'asr') { if (CFG.asrServer) return asrPath(vid, D, tracks, { sources, source: 'asr', setSource }); showStatus('CFG.asrServer is not set.', [retryBtn]); return; }
+    if (!tracks.length) { if (CFG.asrServer) return asrPath(vid, D, tracks, { sources, source: 'asr', setSource }); showStatus('No caption tracks found in the player response.', [retryBtn]); return; }
+    const zh = (forced[vid] && tracks.find(t => t.languageCode === forced[vid])) || pickZhTrack(tracks);
+    if (!zh) { if (CFG.asrServer) return asrPath(vid, D, tracks, { sources, source: 'asr', setSource }); showStatus('No Chinese track. Available: ' + tracks.map(trackName).join(', '), [retryBtn]); return; }
     const nativeEn = tracks.find(t => /^en/.test(t.languageCode) && t.kind !== 'asr') || tracks.find(t => /^en/.test(t.languageCode));
     const canTranslate = zh.isTranslatable !== false && (cap.translationLanguages ?? []).some(l => l.languageCode === 'en');
 
     const actions = {
       reload: async () => { await cacheDel(vid); currentVideo = null; init(); },
       clearAll: async () => { await cacheClear(); currentVideo = null; init(); },
+      sources, source: zh.languageCode, setSource,
     };
     try {
       let zhSegs, enT, enN, fromCache = false;
@@ -591,13 +614,13 @@
         if (zhSegs.length) cachePut({ vid, t: Date.now(), zhLang: zh.languageCode, enLang: nativeEn?.languageCode ?? null, zhSegs, enT, enN });
       }
       log('zh', zhSegs.length, 'en-translate', enT.length, 'en-native', enN.length, fromCache ? '(cache)' : '(fetched)');
-      if (!zhSegs.length) { showStatus('Chinese track empty.'); return; }
+      if (!zhSegs.length) { showStatus('Chinese track empty.', [retryBtn, whisperBtn]); return; }
       const en = { native: enN.length ? alignByOverlap(zhSegs, enN) : null,
                    translate: enT.length ? alignByOverlap(zhSegs, enT) : null };
       buildPanel(zhSegs, en, `${trackName(zh)}${zh.kind === 'asr' ? ' (auto)' : ''}${fromCache ? ' ·cached' : ''}`, D, actions);
       document.getElementById('ytz-panel')._vid = vid;
       if (!en.native && !en.translate) makeLocalTranslator(vid).update(zhSegs);
-    } catch (e) { console.error('[yt-zhuyin]', e); showStatus('Failed: ' + e.message); }
+    } catch (e) { console.error('[yt-zhuyin]', e); showStatus('Failed: ' + e.message, [retryBtn, whisperBtn]); }
   }
 
   window.addEventListener('yt-navigate-finish', () => { currentVideo = null; init(); });
