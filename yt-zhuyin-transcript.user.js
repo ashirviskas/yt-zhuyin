@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube 注音 transcript (zh-TW + zhuyin, pinyin optional, English)
 // @namespace    local.yt-zhuyin
-// @version      0.6.0
+// @version      0.6.1
 // @description  Side panel: traditional Chinese captions segmented into words with zhuyin from a Taiwan (McBopomofo) dictionary, optional pinyin derived from the zhuyin, English line, click-to-seek.
 // @match        https://www.youtube.com/*
 // @homepageURL  https://github.com/ashirviskas/yt-zhuyin
@@ -47,7 +47,11 @@
     asrServer: 'http://127.0.0.1:8765', // local asr_server.py; set null to disable
     asrPollMs: 4000,
     localTranslate: true,       // ask the local server for a per-line English translation when YouTube has none
-    translateBatch: 24,         // lines per /translate request; smaller = English shows up sooner on long videos
+    translateBatch: 24,         // sentences per /translate request; smaller = English shows up sooner on long videos
+    translateUnit: 'sentence',  // 'sentence': group lines into sentences before translating (English shown on the first line) | 'line'
+    sentenceMaxChars: 60,       // sentence grouping: force a break after this many characters
+    sentenceGapSec: 1.5,        // sentence grouping: a pause longer than this ends a sentence
+    mtCacheMax: 20000,          // translated lines kept in IndexedDB (oldest evicted)         // lines per /translate request; smaller = English shows up sooner on long videos
     asrMaxChars: 14,            // re-chunk whisper word timestamps into lines of at most this many characters
     asrMinChars: 4,             // don't cut on a pause before this many characters
     asrGapSec: 0.7,             // a silence longer than this ends a line            // how often to poll the server while it transcribes
@@ -216,18 +220,22 @@
   }
 
   // ---------------------------------------------------------------- cache (IndexedDB, youtube.com origin)
-  const DB_NAME = 'ytz-cache', STORE = 'transcripts';
+  const DB_NAME = 'ytz-cache', STORE = 'transcripts', MT_STORE = 'mt';
   function openDb() {
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open(DB_NAME, 1);
-      req.onupgradeneeded = () => req.result.createObjectStore(STORE, { keyPath: 'vid' }).createIndex('t', 't');
+      const req = indexedDB.open(DB_NAME, 2);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'vid' }).createIndex('t', 't');
+        if (!db.objectStoreNames.contains(MT_STORE)) db.createObjectStore(MT_STORE, { keyPath: 'zh' }).createIndex('t', 't');
+      };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
     });
   }
-  function tx(mode, fn) {
+  function tx(mode, fn, store = STORE) {
     return openDb().then(db => new Promise((resolve, reject) => {
-      const t = db.transaction(STORE, mode), st = t.objectStore(STORE);
+      const t = db.transaction(store, mode), st = t.objectStore(store);
       let out; try { out = fn(st); } catch (e) { reject(e); }
       t.oncomplete = () => { db.close(); resolve(out?.result ?? out); };
       t.onerror = () => { db.close(); reject(t.error); };
@@ -244,6 +252,27 @@
       if (excess > 0) await tx('readwrite', st => { keys.slice(0, excess).forEach(k => st.delete(k)); });
     } catch (e) { log('cache put failed', e); }
   }
+
+  // translated-line cache: zh text -> en
+  async function mtGetMany(texts) {
+    const out = new Map();
+    try {
+      await tx('readonly', st => { for (const z of texts) { const r = st.get(z); r.onsuccess = () => { if (r.result) out.set(z, r.result.en); }; } }, MT_STORE);
+    } catch (e) { log('mt cache get failed', e); }
+    return out;
+  }
+  async function mtPutMany(pairs) {
+    try {
+      const now = Date.now();
+      await tx('readwrite', st => { for (const [zh, en] of pairs) st.put({ zh, en, t: now }); }, MT_STORE);
+      const n = await tx('readonly', st => st.count(), MT_STORE);
+      if (n > CFG.mtCacheMax) {
+        const keys = await tx('readonly', st => st.index('t').getAllKeys(null, n - CFG.mtCacheMax), MT_STORE);
+        await tx('readwrite', st => { for (const k of keys) st.delete(k); }, MT_STORE);
+      }
+    } catch (e) { log('mt cache put failed', e); }
+  }
+  const mtClear = () => tx('readwrite', st => st.clear(), MT_STORE).catch(e => log('mt clear failed', e));
 
   // ---------------------------------------------------------------- render
   const CSS = `
@@ -467,48 +496,76 @@
     return out;
   }
 
-  // Per-line English from the local server (opus-mt). Returns null if unavailable.
-  async function translateLocal(lines) {
-    if (!CFG.asrServer || !CFG.localTranslate || !lines.length) return null;
-    try {
-      const r = await fetch(`${CFG.asrServer}/translate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lines }) });
-      if (!r.ok) return null;
-      const j = await r.json();
-      return Array.isArray(j.lines) ? j.lines : null;
-    } catch (e) { log('local translate failed', e); return null; }
+  // English from the local server (opus-mt), with a browser-side translation memory (IndexedDB).
+  // Returns null if the server is unavailable.
+  async function translateLocal(texts) {
+    if (!CFG.asrServer || !CFG.localTranslate || !texts.length) return null;
+    const known = await mtGetMany(texts);
+    const miss = [...new Set(texts.filter(t => !(t in known)))];
+    if (miss.length) {
+      try {
+        const r = await fetch(`${CFG.asrServer}/translate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lines: miss }) });
+        if (!r.ok) return null;
+        const j = await r.json();
+        if (!Array.isArray(j.lines)) return null;
+        const pairs = miss.map((z, k) => [z, j.lines[k] ?? '']);
+        pairs.forEach(([z, e]) => { known[z] = e; });
+        mtPutMany(pairs);
+      } catch (e) { log('local translate failed', e); return null; }
+    }
+    return texts.map(t => known[t] ?? '');
   }
-  // Incremental per-line translation: keeps an index-aligned array for the current panel and
-  // translates only lines it hasn't seen yet, in order, while transcription is still running.
+
+  // Group consecutive lines into sentences: end at sentence punctuation, a long pause, or a length cap.
+  // Returns [{first, last, text}] over line indices.
+  function groupSentences(segs) {
+    const END = /[。？！?!…]$/, out = [];
+    let cur = null;
+    segs.forEach((sg, i) => {
+      if (!cur) cur = { first: i, last: i, text: sg.text };
+      else { cur.last = i; cur.text += sg.text; }
+      const next = segs[i + 1];
+      const len = [...cur.text].length;
+      if (END.test(sg.text.trim()) || !next || next.start - sg.end > CFG.sentenceGapSec || len >= CFG.sentenceMaxChars) { out.push(cur); cur = null; }
+    });
+    return out;
+  }
+
+  // Incremental translator for the current panel. Sentence mode: the English for a sentence is shown
+  // under its first line; continuation lines get '↳'. Keeps an index-aligned array and only translates
+  // units it hasn't seen, in order, so it works while transcription is still running.
   function makeLocalTranslator(vid) {
-    let lines = [], texts = [], chain = Promise.resolve();
+    let lines = [], seen = new Map(), chain = Promise.resolve();
     const push = () => { const p = document.getElementById('ytz-panel'); if (p?._addSegs && p._vid === vid) p._addSegs([], { local: lines.slice() }); };
     return {
-      reset() { lines = []; texts = []; },
-      // translate every seg whose text differs from what we already have at that index
-      update(segs) {
-        const todo = [];
-        segs.forEach((sg, i) => { if (texts[i] !== sg.text) { texts[i] = sg.text; lines[i] = lines[i] ?? ''; todo.push(i); } });
+      reset() { lines = []; seen = new Map(); },
+      update(segs, done = true) {
+        const units = CFG.translateUnit === 'sentence' ? groupSentences(segs) : segs.map((sg, i) => ({ first: i, last: i, text: sg.text }));
+        // while ASR is still running, the last unit may still be growing: skip it unless it ends with punctuation
+        const stable = units.filter((u, k) => done || k < units.length - 1 || /[。？！?!…]$/.test(u.text.trim()));
+        const todo = stable.filter(u => seen.get(u.first) !== u.text);
         if (!todo.length) return;
-        // batch so a long (cached) video fills in progressively instead of after one big request
+        todo.forEach(u => { seen.set(u.first, u.text); for (let i = u.first; i <= u.last; i++) lines[i] = i === u.first ? (lines[i] || '') : '↳'; });
         for (let b = 0; b < todo.length; b += CFG.translateBatch) {
           const batch = todo.slice(b, b + CFG.translateBatch);
           chain = chain.then(async () => {
-            if (!document.getElementById('ytz-panel') || document.getElementById('ytz-panel')._vid !== vid) return;  // navigated away
-            const res = await translateLocal(batch.map(i => texts[i]));
+            const p = document.getElementById('ytz-panel'); if (!p || p._vid !== vid) return;   // navigated away
+            const res = await translateLocal(batch.map(u => u.text));
             if (!res) return;
-            batch.forEach((i, k) => { lines[i] = res[k]; });
+            batch.forEach((u, k) => { lines[u.first] = res[k]; });
             push();
           });
         }
       },
     };
   }
+
   // ---------------------------------------------------------------- local ASR fallback
   async function asrPath(vid, D, tracks, srcSel = {}) {
     const url = `${CFG.asrServer}/transcript/${vid}`;
     const actions = {
       reload: async () => { try { await fetch(url, { method: 'DELETE' }); } catch {} currentVideo = null; init(); },
-      clearAll: async () => { await cacheClear(); currentVideo = null; init(); },
+      clearAll: async () => { await cacheClear(); await mtClear(); currentVideo = null; init(); },
       ...srcSel,
     };
     const retryBtn = ['retry', () => { currentVideo = null; init(); }];
@@ -531,7 +588,7 @@
       buildPanel(segs, en, meta, D, actions);
       const p = document.getElementById('ytz-panel'); p._vid = vid; p._lastStart = segs.at(-1)?.start ?? -1;
       shown = segs.length;
-      tr.reset(); tr.update(segs);
+      tr.reset(); tr.update(segs, j.done);
     };
     while (currentVideo === vid) {
       let j;
@@ -550,7 +607,7 @@
         if (panel?._addSegs && panel._vid === vid) { panel._addSegs(fresh, en, meta); panel._lastStart = segs.at(-1)?.start ?? prevEnd; }
         else { buildPanel(segs, en, meta, D, actions); const p = document.getElementById('ytz-panel'); p._vid = vid; p._lastStart = segs.at(-1)?.start ?? -1; }
         shown = segs.length;
-        tr.update(segs);
+        tr.update(segs, j.done);
       } else if (!segs.length) {
         showStatus(`Local ASR: ${j.status === 'paused' ? 'resuming' : j.status}${j.progress ? ` ${Math.round(j.progress * 100)}%` : ''}…`);
       }
@@ -594,7 +651,7 @@
 
     const actions = {
       reload: async () => { await cacheDel(vid); currentVideo = null; init(); },
-      clearAll: async () => { await cacheClear(); currentVideo = null; init(); },
+      clearAll: async () => { await cacheClear(); await mtClear(); currentVideo = null; init(); },
       sources, source: zh.languageCode, setSource,
     };
     try {

@@ -60,7 +60,9 @@ cc = None
 cc_t2s = None
 mt = None            # (tokenizer, model) lazily loaded
 mt_lock = threading.Lock()
-mt_cache = {}        # zh line -> en
+mt_cache = {}        # zh text -> en, persisted to CACHE/mt_cache.json
+MT_CACHE_FILE = CACHE / "mt_cache.json"
+mt_dirty = 0
 MT_NAME = "Helsinki-NLP/opus-mt-zh-en"
 
 
@@ -101,7 +103,29 @@ def load_mt():
         return mt
 
 
+def mt_cache_load():
+    global mt_cache
+    if MT_CACHE_FILE.exists():
+        try:
+            mt_cache = json.loads(MT_CACHE_FILE.read_text())
+            log(f"MT cache: {len(mt_cache)} entries")
+        except Exception as e:
+            log("bad MT cache file:", e)
+
+
+def mt_cache_flush():
+    global mt_dirty
+    if not mt_dirty:
+        return
+    try:
+        MT_CACHE_FILE.write_text(json.dumps(mt_cache, ensure_ascii=False))
+        mt_dirty = 0
+    except Exception as e:
+        log("MT cache write failed:", e)
+
+
 def translate_lines(lines):
+    global mt_dirty
     m = load_mt()
     if m is None:
         return [None] * len(lines)
@@ -117,8 +141,11 @@ def translate_lines(lines):
             gen = mdl.generate(**enc, num_beams=2, max_length=160)   # max_length only: avoids the max_new_tokens/max_length warning
         for i, t in zip(idx, tok.batch_decode(gen, skip_special_tokens=True)):
             out[i] = mt_cache[lines[i]] = t.strip()
-    if len(mt_cache) > 20000:
+            mt_dirty += 1
+    if len(mt_cache) > 50000:
         mt_cache.clear()
+    if mt_dirty >= 50:
+        mt_cache_flush()
     return [o or "" for o in out]
 
 
@@ -359,10 +386,18 @@ if __name__ == "__main__":
     MODEL_NAME = args.model
     MT_NAME = None if args.mt.lower() == 'none' else args.mt
     load_model(args.model)
+    mt_cache_load()
     threading.Thread(target=worker, args=(args.translate,), daemon=True).start()
+    def _periodic_flush():
+        while True:
+            time.sleep(30)
+            mt_cache_flush()
+    threading.Thread(target=_periodic_flush, daemon=True).start()
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), H)
     log(f"listening on http://127.0.0.1:{args.port}  cache: {CACHE}")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        mt_cache_flush()
