@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube 注音 transcript (zh-TW + zhuyin, pinyin optional, English)
 // @namespace    local.yt-zhuyin
-// @version      0.3.1
+// @version      0.4.2
 // @description  Side panel: traditional Chinese captions segmented into words with zhuyin from a Taiwan (McBopomofo) dictionary, optional pinyin derived from the zhuyin, English line, click-to-seek.
 // @match        https://www.youtube.com/*
 // @homepageURL  https://github.com/ashirviskas/yt-zhuyin
@@ -44,6 +44,11 @@
     harvestAttempts: 3,         // caption-load triggers before giving up
     harvestTimeoutMs: 3000,     // per attempt
     waitForPlaybackMs: 15000,   // wait for the player to start before harvesting (captions load lazily)
+    asrServer: 'http://127.0.0.1:8765', // local asr_server.py; set null to disable
+    asrPollMs: 4000,
+    asrMaxChars: 14,            // re-chunk whisper word timestamps into lines of at most this many characters
+    asrMinChars: 4,             // don't cut on a pause before this many characters
+    asrGapSec: 0.7,             // a silence longer than this ends a line            // how often to poll the server while it transcribes
     pollMs: 100,                // highlight update interval; one getCurrentTime() call per tick
     debug: true,
   };
@@ -324,20 +329,29 @@
 
     const body = document.createElement('div'); body.id = 'ytz-body';
     const rows = [], enEls = [];
-    for (const s of segs) {
+    const addRow = (seg) => {
       const row = document.createElement('div'); row.className = 'ytz-row';
-      const ts = document.createElement('div'); ts.className = 'ytz-ts'; ts.textContent = fmtTime(s.start);
+      const ts = document.createElement('div'); ts.className = 'ytz-ts'; ts.textContent = fmtTime(seg.start);
       const col = document.createElement('div');
-      const { wrap, py } = renderZh(s.text, D);
+      const { wrap, py } = renderZh(seg.text, D);
       const pyEl = document.createElement('div'); pyEl.className = 'ytz-py'; pyEl.textContent = py;
       const enEl = document.createElement('div'); enEl.className = 'ytz-en';
       col.append(wrap, pyEl, enEl); row.append(ts, col);
-      row.addEventListener('click', () => document.getElementById('movie_player')?.seekTo(s.start, true));
+      row.addEventListener('click', () => document.getElementById('movie_player')?.seekTo(seg.start, true));
       body.appendChild(row); rows.push(row); enEls.push(enEl);
-    }
+    };
+    segs.forEach(addRow);
     panel.appendChild(body);
-    const applyEn = (mode) => { const lines = en[mode] ?? []; enEls.forEach((el, i) => el.textContent = lines[i] ?? ''); };
+    let enMode = enMode0;
+    const applyEn = (mode) => { enMode = mode; const lines = en[mode] ?? []; enEls.forEach((el, i) => el.textContent = lines[i] ?? ''); };
     applyEn(enMode0);
+    // append more segments later (progressive ASR) without rebuilding or losing scroll position
+    panel._addSegs = (more, newEn, newMeta) => {
+      more.forEach(seg => { segs.push(seg); addRow(seg); });
+      if (newEn) Object.assign(en, newEn);
+      applyEn(enMode);
+      if (newMeta !== undefined) title.textContent = newMeta;
+    };
 
     head.querySelector('#ytz-top').onchange = e => panel.classList.toggle('ytz-top', e.target.checked);
     head.querySelector('#ytz-py').onchange = e => panel.classList.toggle('ytz-nopy', !e.target.checked);
@@ -357,7 +371,13 @@
       for (let i = 0; i < segs.length; i++) { if (segs[i].start <= t) idx = i; else break; }
       if (idx === active) return;
       rows[active]?.classList.remove('ytz-active'); active = idx;
-      if (idx >= 0) { rows[idx].classList.add('ytz-active'); if (CFG.follow) rows[idx].scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+      if (idx >= 0) {
+        rows[idx].classList.add('ytz-active');
+        if (CFG.follow) {  // scroll the panel body only; scrollIntoView would also scroll the page
+          const r = rows[idx];
+          body.scrollTo({ top: r.offsetTop - body.clientHeight / 2 + r.offsetHeight / 2, behavior: 'smooth' });
+        }
+      }
     };
     const timer = setInterval(tick, CFG.pollMs);
     tick();
@@ -370,6 +390,70 @@
     if (!panel) { panel = document.createElement('div'); panel.id = 'ytz-panel';
       (document.querySelector('#secondary-inner') || document.querySelector('#secondary'))?.prepend(panel); }
     panel.replaceChildren(); const d = document.createElement('div'); d.id = 'ytz-status'; d.textContent = msg; panel.appendChild(d);
+  }
+
+  // Re-chunk whisper word timestamps into short lines: cut on sentence punctuation, on pauses,
+  // and on length (preferring a comma-like break inside the chunk over a hard cut).
+  function chunkWords(words, maxChars = CFG.asrMaxChars, minChars = CFG.asrMinChars, gap = CFG.asrGapSec) {
+    const END = /[。？！?!…]$/, SOFT = /[，、；：,;:]$/;
+    const out = []; let cur = null;
+    const flush = () => { if (cur && cur.text.trim()) out.push(cur); cur = null; };
+    for (let i = 0; i < words.length; i++) {
+      const w = words[i], next = words[i + 1];
+      if (!cur) cur = { start: w.start, end: w.end, text: '', softAt: -1, softEnd: 0 };
+      cur.text += w.text; cur.end = w.end;
+      const len = [...cur.text].length;
+      if (SOFT.test(w.text) && len >= minChars) { cur.softAt = cur.text.length; cur.softEnd = w.end; }
+      if (END.test(w.text) || !next) { flush(); continue; }
+      if (next.start - w.end > gap && len >= minChars) { flush(); continue; }
+      if (len >= maxChars) {
+        // don't cut inside a digit/latin run (17公里, 258億, OK), and past maxChars prefer a tiny pause over a blind cut
+        const ALNUM = /[0-9A-Za-z.%]$/, ALNUM0 = /^[0-9A-Za-z.%]/;
+        const inRun = ALNUM.test(w.text) && ALNUM0.test(next.text);
+        const tinyGap = next.start - w.end >= 0.12;
+        if (cur.softAt <= 0 && !tinyGap && len < maxChars + 6) continue;
+        if (inRun) continue;
+        if (cur.softAt > 0 && cur.softAt < cur.text.length) {           // split at the last soft break
+          const rest = cur.text.slice(cur.softAt), restStart = cur.softEnd;
+          cur.text = cur.text.slice(0, cur.softAt); cur.end = cur.softEnd; flush();
+          cur = { start: restStart, end: w.end, text: rest, softAt: -1, softEnd: 0 };
+        } else flush();
+      }
+    }
+    flush();
+    return out.map(({ start, end, text }) => ({ start, end, text }));
+  }
+
+  // ---------------------------------------------------------------- local ASR fallback
+  async function asrPath(vid, D, tracks) {
+    const url = `${CFG.asrServer}/transcript/${vid}`;
+    const actions = {
+      reload: async () => { try { await fetch(url, { method: 'DELETE' }); } catch {} currentVideo = null; init(); },
+      clearAll: async () => { await cacheClear(); currentVideo = null; init(); },
+    };
+    let shown = 0;
+    while (currentVideo === vid) {
+      let j;
+      try { const r = await fetch(url); j = await r.json(); }
+      catch (e) { showStatus(`No captions on this video, and the local ASR server at ${CFG.asrServer} is not reachable. Start asr_server.py, or set CFG.asrServer = null.`); return; }
+      if (j.status === 'error') { showStatus('ASR failed: ' + j.error); return; }
+      const segs = j.words?.length ? chunkWords(j.words) : (j.segs ?? []);
+      if (segs.length && (segs.length !== shown || j.done)) {
+        const en = { translate: j.en?.length ? alignByOverlap(segs, j.en) : null, native: null };
+        const meta = `ASR (whisper)${j.done ? '' : ` · ${Math.round((j.progress ?? 0) * 100)}%`}`;
+        const panel = document.getElementById('ytz-panel');
+        // word-chunked lines can change retroactively as more words arrive, so only append lines whose start is past everything shown
+        const prevEnd = panel?._lastStart ?? -1;
+        const fresh = segs.filter(x => x.start > prevEnd);
+        if (panel?._addSegs && panel._vid === vid) { panel._addSegs(fresh, en, meta); panel._lastStart = segs.at(-1)?.start ?? prevEnd; }
+        else { buildPanel(segs, en, meta, D, actions); const p = document.getElementById('ytz-panel'); p._vid = vid; p._lastStart = segs.at(-1)?.start ?? -1; }
+        shown = segs.length;
+      } else if (!segs.length) {
+        showStatus(`No captions on this video. Local ASR: ${j.status}${j.progress ? ` ${Math.round(j.progress * 100)}%` : ''}…`);
+      }
+      if (j.done) return;
+      await sleep(CFG.asrPollMs);
+    }
   }
 
   // ---------------------------------------------------------------- main
@@ -391,9 +475,9 @@
     const cap = player.getPlayerResponse().captions?.playerCaptionsTracklistRenderer;
     const tracks = cap?.captionTracks ?? [];
     log('tracks', tracks.map(t => t.languageCode + (t.kind === 'asr' ? '(asr)' : '')));
-    if (!tracks.length) { showStatus('No caption tracks.'); return; }
+    if (!tracks.length) { if (CFG.asrServer) return asrPath(vid, D, tracks); showStatus('No caption tracks.'); return; }
     const zh = pickZhTrack(tracks);
-    if (!zh) { showStatus('No Chinese track. Available: ' + tracks.map(trackName).join(', ')); return; }
+    if (!zh) { if (CFG.asrServer) return asrPath(vid, D, tracks); showStatus('No Chinese track. Available: ' + tracks.map(trackName).join(', ')); return; }
     const nativeEn = tracks.find(t => /^en/.test(t.languageCode) && t.kind !== 'asr') || tracks.find(t => /^en/.test(t.languageCode));
     const canTranslate = zh.isTranslatable !== false && (cap.translationLanguages ?? []).some(l => l.languageCode === 'en');
 
