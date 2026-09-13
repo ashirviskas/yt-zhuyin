@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube 注音 transcript (zh-TW + zhuyin, pinyin optional, English)
 // @namespace    local.yt-zhuyin
-// @version      0.2.3
+// @version      0.3.1
 // @description  Side panel: traditional Chinese captions segmented into words with zhuyin from a Taiwan (McBopomofo) dictionary, optional pinyin derived from the zhuyin, English line, click-to-seek.
 // @match        https://www.youtube.com/*
 // @homepageURL  https://github.com/ashirviskas/yt-zhuyin
@@ -39,6 +39,12 @@
     hanFontSize: '30px',
     zhuyinFontSize: '14px',     // side layout: ~half the character height is the readable minimum on a 96-dpi screen
     zhuyinTopFontSize: '13px',
+    cacheTtlMs: 60 * 60 * 1000, // transcript cache TTL
+    cacheMax: 50,               // max cached videos (oldest evicted)
+    harvestAttempts: 3,         // caption-load triggers before giving up
+    harvestTimeoutMs: 3000,     // per attempt
+    waitForPlaybackMs: 15000,   // wait for the player to start before harvesting (captions load lazily)
+    pollMs: 100,                // highlight update interval; one getCurrentTime() call per tick
     debug: true,
   };
 
@@ -126,31 +132,59 @@
     return out;
   }
 
-  // Get a signed timedtext URL (with pot) by making the player fetch a track itself.
-  function harvestTimedtextUrl(player, langCode) {
-    return new Promise((resolve) => {
-      const seen = performance.getEntriesByType('resource').filter(e => e.name.includes('/api/timedtext'));
+  // Wait until the player is actually playing (state 1); the captions module doesn't request a
+  // track for a cued/unstarted player. Returns false if playback never started (autoplay blocked).
+  function waitForPlayback(player, ms) {
+    return new Promise(resolve => {
+      if (player.getPlayerState?.() === 1) return resolve(true);
       let done = false;
-      const finish = (u) => { if (done) return; done = true; obs.disconnect(); resolve(u); };
-      const obs = new PerformanceObserver((list) => {
-        const hit = list.getEntries().find(e => e.name.includes('/api/timedtext') && e.name.includes('pot='));
-        if (hit) finish(hit.name);
-      });
-      obs.observe({ type: 'resource', buffered: false });
-      const prev = player.getOption?.('captions', 'track');
-      player.loadModule?.('captions');
-      player.setOption('captions', 'track', { languageCode: langCode });
-      setTimeout(() => {
-        if (done) return;
-        // maybe it was already cached from before we observed
-        const late = performance.getEntriesByType('resource').map(e => e.name).filter(u => u.includes('/api/timedtext') && u.includes('pot='));
-        finish(late.at(-1) ?? seen.at(-1)?.name ?? null);
-      }, 4000);
-      if (CFG.restoreCaptions) setTimeout(() => {
-        if (prev && prev.languageCode) player.setOption('captions', 'track', prev);
-        else player.setOption('captions', 'track', {});
-      }, 1500);
+      const finish = (ok) => { if (done) return; done = true; player.removeEventListener?.('onStateChange', onState); clearTimeout(tm); resolve(ok); };
+      const onState = (st) => { if (st === 1) finish(true); };
+      player.addEventListener?.('onStateChange', onState);
+      const tm = setTimeout(() => finish(player.getPlayerState?.() === 1), ms);
     });
+  }
+
+  // Get a signed timedtext URL (with pot) by making the player fetch a track itself.
+  // One attempt: trigger a caption (re)load, watch the Performance API for the resulting request.
+  function harvestOnce(player, langCode, timeoutMs) {
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (u) => { if (done) return; done = true; obs.disconnect(); clearTimeout(tm); resolve(u); };
+      const isTT = (u) => u.includes('/api/timedtext') && u.includes('pot=');
+      const obs = new PerformanceObserver((list) => { const hit = list.getEntries().find(e => isTT(e.name)); if (hit) finish(hit.name); });
+      obs.observe({ type: 'resource', buffered: false });
+      try {
+        player.loadModule?.('captions');
+        player.setOption('captions', 'track', { languageCode: langCode });
+        player.setOption('captions', 'reload', true);   // documented way to force a caption refetch
+      } catch (e) { log('caption trigger threw', e); }
+      const tm = setTimeout(() => {
+        const late = performance.getEntriesByType('resource').map(e => e.name).filter(isTT);
+        finish(late.at(-1) ?? null);
+      }, timeoutMs);
+    });
+  }
+
+  async function harvestTimedtextUrl(player, langCode, altLang) {
+    const prev = player.getOption?.('captions', 'track');
+    // anything already in the resource buffer from this page load is fine to reuse
+    const early = performance.getEntriesByType('resource').map(e => e.name).filter(u => u.includes('/api/timedtext') && u.includes('pot='));
+    let url = early.at(-1) ?? null;
+    if (!url) {
+      const playing = await waitForPlayback(player, CFG.waitForPlaybackMs);
+      log('playback started:', playing, 'state', player.getPlayerState?.());
+      for (let i = 0; i < CFG.harvestAttempts && !url; i++) {
+        // alternate tracks so each attempt is a different request the player can't short-circuit
+        const lang = (i % 2 === 0 || !altLang) ? langCode : altLang;
+        url = await harvestOnce(player, lang, CFG.harvestTimeoutMs);
+        log('harvest attempt', i + 1, lang, url ? 'ok' : 'nothing');
+      }
+    }
+    if (CFG.restoreCaptions) setTimeout(() => {
+      try { if (prev && prev.languageCode) player.setOption('captions', 'track', prev); else player.setOption('captions', 'track', {}); } catch {}
+    }, 500);
+    return url;
   }
 
   async function fetchTrack(signedUrl, lang, tlang) {
@@ -174,15 +208,47 @@
     });
   }
 
+  // ---------------------------------------------------------------- cache (IndexedDB, youtube.com origin)
+  const DB_NAME = 'ytz-cache', STORE = 'transcripts';
+  function openDb() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(DB_NAME, 1);
+      req.onupgradeneeded = () => req.result.createObjectStore(STORE, { keyPath: 'vid' }).createIndex('t', 't');
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+  function tx(mode, fn) {
+    return openDb().then(db => new Promise((resolve, reject) => {
+      const t = db.transaction(STORE, mode), st = t.objectStore(STORE);
+      let out; try { out = fn(st); } catch (e) { reject(e); }
+      t.oncomplete = () => { db.close(); resolve(out?.result ?? out); };
+      t.onerror = () => { db.close(); reject(t.error); };
+    }));
+  }
+  const cacheGet = (vid) => tx('readonly', st => st.get(vid)).catch(e => (log('cache get failed', e), null));
+  const cacheDel = (vid) => tx('readwrite', st => st.delete(vid)).catch(e => log('cache del failed', e));
+  const cacheClear = () => tx('readwrite', st => st.clear()).catch(e => log('cache clear failed', e));
+  async function cachePut(entry) {
+    try {
+      await tx('readwrite', st => st.put(entry));
+      const keys = await tx('readonly', st => st.index('t').getAllKeys());   // ascending by t
+      const excess = keys.length - CFG.cacheMax;
+      if (excess > 0) await tx('readwrite', st => { keys.slice(0, excess).forEach(k => st.delete(k)); });
+    } catch (e) { log('cache put failed', e); }
+  }
+
   // ---------------------------------------------------------------- render
   const CSS = `
   #ytz-panel{margin:0 0 12px;border:1px solid var(--yt-spec-10-percent-layer,#333);border-radius:12px;background:var(--yt-spec-base-background,#0f0f0f);color:var(--yt-spec-text-primary,#f1f1f1);font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",Roboto,sans-serif;overflow:hidden}
   #ytz-head{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--yt-spec-10-percent-layer,#333);font-size:13px}
   #ytz-head .ytz-title{font-weight:500;margin-right:auto}
   #ytz-head label{display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none}
+  #ytz-head button{background:transparent;color:inherit;border:1px solid var(--yt-spec-10-percent-layer,#333);border-radius:4px;padding:2px 8px;cursor:pointer;font:inherit}
+  #ytz-head button:hover{background:var(--yt-spec-badge-chip-background,#272727)}
   #ytz-head select{background:transparent;color:inherit;border:1px solid var(--yt-spec-10-percent-layer,#333);border-radius:4px}
   #ytz-status{padding:10px 12px;font-size:13px;color:var(--yt-spec-text-secondary,#aaa)}
-  #ytz-body{max-height:${CFG.panelMaxHeight};overflow-y:auto}
+  #ytz-body{position:relative;max-height:${CFG.panelMaxHeight};overflow-y:auto}
   .ytz-row{display:grid;grid-template-columns:52px 1fr;gap:8px;padding:8px 12px;cursor:pointer;border-left:3px solid transparent}
   .ytz-row:hover{background:var(--yt-spec-badge-chip-background,#272727)}
   .ytz-row.ytz-active{border-left-color:#ff0033;background:var(--yt-spec-badge-chip-background,#272727)}
@@ -233,7 +299,7 @@
     return { wrap, py: py.join(' ') };
   }
 
-  function buildPanel(segs, en, meta, D) {
+  function buildPanel(segs, en, meta, D, actions) {
     injectCss();
     document.getElementById('ytz-panel')?._cleanup?.();
     document.getElementById('ytz-panel')?.remove();
@@ -251,7 +317,9 @@
       i.type = 'checkbox'; i.id = id; i.checked = checked; l.append(i, document.createTextNode(label)); return l; };
     const enSel = document.createElement('select'); enSel.id = 'ytz-enmode';
     for (const m of enModes) { const o = document.createElement('option'); o.value = m; o.textContent = m === 'native' ? 'native EN' : 'auto-translated'; o.selected = m === enMode0; enSel.appendChild(o); }
-    head.append(title, mkToggle('ytz-top', 'zhuyin on top', CFG.zhuyinLayout === 'top'), mkToggle('ytz-py', 'pinyin', CFG.showPinyin), mkToggle('ytz-en', 'English', CFG.showEnglish), enSel, mkToggle('ytz-follow', 'follow', CFG.follow));
+    const mkBtn = (label, title, fn) => { const b = document.createElement('button'); b.textContent = label; b.title = title; b.onclick = fn; return b; };
+    head.append(title, mkToggle('ytz-top', 'zhuyin on top', CFG.zhuyinLayout === 'top'), mkToggle('ytz-py', 'pinyin', CFG.showPinyin), mkToggle('ytz-en', 'English', CFG.showEnglish), enSel, mkToggle('ytz-follow', 'follow', CFG.follow),
+      mkBtn('↻', 'Refetch this video\'s transcript', actions.reload), mkBtn('✕ cache', 'Clear all cached transcripts and refetch', actions.clearAll));
     panel.appendChild(head);
 
     const body = document.createElement('div'); body.id = 'ytz-body';
@@ -279,17 +347,21 @@
 
     (document.querySelector('#secondary-inner') || document.querySelector('#secondary')).prepend(panel);
 
-    const video = document.querySelector('video.html5-main-video');
+    // Poll the player instead of binding to the <video> element: YouTube swaps the element on
+    // quality/format changes, which silently orphans any timeupdate listener.
+    const player = document.getElementById('movie_player');
     let active = -1;
-    const onTime = () => {
-      const t = video.currentTime; let idx = -1;
+    const tick = () => {
+      const t = player?.getCurrentTime?.(); if (typeof t !== 'number') return;
+      let idx = -1;
       for (let i = 0; i < segs.length; i++) { if (segs[i].start <= t) idx = i; else break; }
       if (idx === active) return;
       rows[active]?.classList.remove('ytz-active'); active = idx;
       if (idx >= 0) { rows[idx].classList.add('ytz-active'); if (CFG.follow) rows[idx].scrollIntoView({ block: 'center', behavior: 'smooth' }); }
     };
-    video.addEventListener('timeupdate', onTime);
-    panel._cleanup = () => video.removeEventListener('timeupdate', onTime);
+    const timer = setInterval(tick, CFG.pollMs);
+    tick();
+    panel._cleanup = () => clearInterval(timer);
   }
 
   function showStatus(msg) {
@@ -325,19 +397,31 @@
     const nativeEn = tracks.find(t => /^en/.test(t.languageCode) && t.kind !== 'asr') || tracks.find(t => /^en/.test(t.languageCode));
     const canTranslate = zh.isTranslatable !== false && (cap.translationLanguages ?? []).some(l => l.languageCode === 'en');
 
+    const actions = {
+      reload: async () => { await cacheDel(vid); currentVideo = null; init(); },
+      clearAll: async () => { await cacheClear(); currentVideo = null; init(); },
+    };
     try {
-      const signed = await harvestTimedtextUrl(player, zh.languageCode);
-      if (!signed) throw new Error('could not capture a signed timedtext URL from the player');
-      const [zhSegs, enT, enN] = await Promise.all([
-        fetchTrack(signed, zh.languageCode),
-        canTranslate ? fetchTrack(signed, zh.languageCode, 'en').catch(e => (log(e), [])) : [],
-        nativeEn ? fetchTrack(signed, nativeEn.languageCode).catch(e => (log(e), [])) : [],
-      ]);
-      log('zh', zhSegs.length, 'en-translate', enT.length, 'en-native', enN.length);
+      let zhSegs, enT, enN, fromCache = false;
+      const hit = await cacheGet(vid);
+      if (hit && Date.now() - hit.t < CFG.cacheTtlMs && hit.zhLang === zh.languageCode && hit.enLang === (nativeEn?.languageCode ?? null)) {
+        ({ zhSegs, enT, enN } = hit); fromCache = true;
+        log('cache hit', vid, Math.round((Date.now() - hit.t) / 1000) + 's old');
+      } else {
+        const signed = await harvestTimedtextUrl(player, zh.languageCode, nativeEn?.languageCode);
+        if (!signed) throw new Error('could not capture a signed timedtext URL from the player');
+        [zhSegs, enT, enN] = await Promise.all([
+          fetchTrack(signed, zh.languageCode),
+          canTranslate ? fetchTrack(signed, zh.languageCode, 'en').catch(e => (log(e), [])) : [],
+          nativeEn ? fetchTrack(signed, nativeEn.languageCode).catch(e => (log(e), [])) : [],
+        ]);
+        if (zhSegs.length) cachePut({ vid, t: Date.now(), zhLang: zh.languageCode, enLang: nativeEn?.languageCode ?? null, zhSegs, enT, enN });
+      }
+      log('zh', zhSegs.length, 'en-translate', enT.length, 'en-native', enN.length, fromCache ? '(cache)' : '(fetched)');
       if (!zhSegs.length) { showStatus('Chinese track empty.'); return; }
       const en = { native: enN.length ? alignByOverlap(zhSegs, enN) : null,
                    translate: enT.length ? alignByOverlap(zhSegs, enT) : null };
-      buildPanel(zhSegs, en, `${trackName(zh)}${zh.kind === 'asr' ? ' (auto)' : ''}`, D);
+      buildPanel(zhSegs, en, `${trackName(zh)}${zh.kind === 'asr' ? ' (auto)' : ''}${fromCache ? ' ·cached' : ''}`, D, actions);
     } catch (e) { console.error('[yt-zhuyin]', e); showStatus('Failed: ' + e.message); }
   }
 
