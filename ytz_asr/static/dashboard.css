@@ -41,8 +41,31 @@ button:hover{background:#333;color:#fff}
 #detail:not(:empty){background:#1a1a1a;border:1px solid #262626;border-radius:8px;
                     padding:14px;margin-top:20px}
 audio{width:100%;margin:10px 0;height:34px}
-.lines{max-height:46vh;overflow-y:auto;border-top:1px solid #262626;padding-top:8px}
-.lines p{margin:0;padding:3px 6px;border-radius:4px;cursor:pointer;display:flex;gap:10px}
+.chk{display:inline-flex;align-items:center;gap:5px;color:#999;font-size:12px;cursor:pointer}
+.chk input{accent-color:#e8b339;margin:0}
+.lines{max-height:46vh;overflow-y:auto;border-top:1px solid #262626;padding:8px 0 0}
+.lines .meta{position:sticky;top:-8px;background:#1a1a1a;padding:4px 6px;z-index:1}
+.lines p{margin:0;padding:4px 6px;border-radius:4px;cursor:pointer;display:flex;gap:10px;
+         border-left:2px solid transparent}
 .lines p:hover{background:#232323}
-.lines .t{color:#666;font-variant-numeric:tabular-nums;flex:none;font-size:12px;padding-top:2px}
-.zh{font-size:16px}
+.lines p.active{background:#241f10;border-left-color:#e8b339}
+.lines .t{color:#666;font-variant-numeric:tabular-nums;flex:none;font-size:12px;padding-top:3px}
+.txt{display:flex;flex-direction:column;gap:1px;min-width:0}
+.zh{font-size:16px;line-height:1.4}
+.en{color:#7f9bb3;font-size:13px;line-height:1.35}
+.en.pending{color:#444}
+
+/* history charts */
+.charts{background:#1a1a1a;border:1px solid #262626;border-radius:8px;padding:12px 14px}
+.chartrow{display:flex;gap:10px;margin-bottom:8px}
+.ylab{width:58px;flex:none;color:#777;font-size:11px;font-variant-numeric:tabular-nums;
+      display:flex;flex-direction:column;justify-content:space-between}
+.ylab span{color:#555}
+svg.chart{flex:1;min-width:0;background:#141414;border-radius:4px;cursor:crosshair;display:block}
+svg.chart.mem{height:110px}
+svg.chart.band{height:74px}
+.foot{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-top:6px}
+.readout{font-variant-numeric:tabular-nums;color:#ddd;font-size:12px;min-width:240px}
+.legend{display:flex;gap:10px;flex-wrap:wrap}
+.lg{display:inline-flex;align-items:center;gap:4px;color:#777;font-size:11px}
+.lg i{width:9px;height:9px;border-radius:2px;display:inline-block}

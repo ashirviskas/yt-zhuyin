@@ -12,6 +12,7 @@
   #ytz-body{position:relative;max-height:${CFG.panelMaxHeight};overflow-y:auto}
   .ytz-row{display:grid;grid-template-columns:52px 1fr;gap:8px;padding:8px 12px;cursor:pointer;border-left:3px solid transparent}
   .ytz-row:hover{background:var(--yt-spec-badge-chip-background,#272727)}
+  .ytz-row.ytz-grp{border-left-color:rgba(232,179,57,.35)}
   .ytz-row.ytz-active{border-left-color:#ff0033;background:var(--yt-spec-badge-chip-background,#272727)}
   .ytz-ts{font-size:12px;color:var(--yt-spec-text-secondary,#aaa);padding-top:6px;font-variant-numeric:tabular-nums}
   .ytz-zh{line-height:1.15}
@@ -86,7 +87,12 @@
       src.onchange = e => actions.setSource(e.target.value);
       head.append(title, src);
     } else head.append(title);
-    head.append(mkToggle('ytz-top', 'zhuyin on top', CFG.zhuyinLayout === 'top'), mkToggle('ytz-py', 'pinyin', CFG.showPinyin), mkToggle('ytz-en', 'English', CFG.showEnglish), enSel, mkToggle('ytz-follow', 'follow', CFG.follow),
+    const unitSel = document.createElement('select'); unitSel.id = 'ytz-enunit';
+    unitSel.title = 'local MT: whole sentences read better, line by line lines up with the Chinese';
+    for (const [v, l] of [['sentence', 'by sentence'], ['line', 'line by line']]) {
+      const o = document.createElement('option'); o.value = v; o.textContent = l; o.selected = v === CFG.translateUnit; unitSel.appendChild(o); }
+    head.append(mkToggle('ytz-top', 'zhuyin on top', CFG.zhuyinLayout === 'top'), mkToggle('ytz-py', 'pinyin', CFG.showPinyin), mkToggle('ytz-en', 'English', CFG.showEnglish), enSel,
+      ...(actions.retranslate ? [unitSel] : []), mkToggle('ytz-follow', 'follow', CFG.follow),
       mkBtn('↻', 'Refetch this video\'s transcript', actions.reload), mkBtn('✕ cache', 'Clear all cached transcripts and refetch', actions.clearAll), ...(actions.extra ?? []));
     panel.appendChild(head);
 
@@ -106,7 +112,17 @@
     segs.forEach(addRow);
     panel.appendChild(body);
     let enMode = enMode0;
-    const applyEn = (mode) => { enMode = mode; const lines = en[mode] ?? []; enEls.forEach((el, i) => el.textContent = lines[i] ?? ''); };
+    // '↳' marks a line continuing the sentence translated above it: blank the text and
+    // bracket the whole group instead, so the English visibly belongs to those lines.
+    const applyEn = (mode) => {
+      enMode = mode;
+      const lines = en[mode] ?? [];
+      const cont = (i) => (lines[i] ?? '') === '↳';
+      enEls.forEach((el, i) => {
+        el.textContent = cont(i) ? '' : (lines[i] ?? '');
+        rows[i].classList.toggle('ytz-grp', cont(i) || cont(i + 1));
+      });
+    };
     applyEn(enMode0);
     // append more segments later (progressive ASR) without rebuilding or losing scroll position
     panel._addSegs = (more, newEn, newMeta) => {
@@ -129,6 +145,7 @@
     head.querySelector('#ytz-en').onchange = e => panel.classList.toggle('ytz-noen', !e.target.checked);
     head.querySelector('#ytz-follow').onchange = e => { CFG.follow = e.target.checked; };
     head.querySelector('#ytz-enmode').onchange = e => applyEn(e.target.value);
+    if (actions.retranslate) head.querySelector('#ytz-enunit').onchange = e => actions.retranslate(e.target.value);
 
     (document.querySelector('#secondary-inner') || document.querySelector('#secondary')).prepend(panel);
 

@@ -10,14 +10,19 @@
 <body>
 <header>
   <h1>yt-zhuyin<span class="sub">local ASR service</span></h1>
-  <div class="live"><span class="dot"></span>refreshing every 2s</div>
+  <div class="live"><span class="dot"></span>live</div>
 </header>
 
-<!-- only this block polls; #detail stays put so playing audio is never swapped away -->
-<main hx-get="/ui/stats" hx-trigger="load, every 2s" hx-swap="innerHTML">
-  <p class="muted">connecting…</p>
-</main>
+<section hx-get="/ui/cards" hx-trigger="load, every 2s" hx-swap="innerHTML"></section>
 
+<!-- slower than the rest: a redraw mid-hover is disruptive, and samples land every 2s anyway -->
+<section id="charts" hx-get="/ui/charts" hx-trigger="load, every 5s" hx-swap="innerHTML"></section>
+
+<section hx-get="/ui/jobs" hx-trigger="load, every 2s" hx-swap="innerHTML">
+  <p class="muted">connecting…</p>
+</section>
+
+<!-- outside every polling region, so a playing track is never swapped away -->
 <section id="detail"></section>
 <script src="/static/dashboard.js"></script>
 </body>

@@ -199,6 +199,11 @@ class JobStore:
         window = segs[-limit:] if live else segs[:limit]
         return window, total, live
 
+    def active_texts(self) -> list[str]:
+        """Lines from jobs that are still running, so they can be translated ahead of time."""
+        with self._cv:
+            return [seg["text"] for job in self._jobs.values() if not job.done for seg in job.segs]
+
     # ---- status ---------------------------------------------------------
 
     def report(self) -> tuple[list[Json], list[str], dict[str, int]]:

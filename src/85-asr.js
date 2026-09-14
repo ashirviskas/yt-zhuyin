@@ -9,6 +9,7 @@
     const retryBtn = ['retry', () => { currentVideo = null; init(); }];
     let shown = 0, lastJ = null;
     const tr = makeLocalTranslator(vid);
+    actions.retranslate = (unit) => tr.setUnit(unit);
     // line-length slider: re-chunks instantly from cached words and rebuilds the panel
     const mkSlider = () => {
       const l = document.createElement('label'); l.title = 'max characters per line';

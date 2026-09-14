@@ -288,6 +288,7 @@
   #ytz-body{position:relative;max-height:${CFG.panelMaxHeight};overflow-y:auto}
   .ytz-row{display:grid;grid-template-columns:52px 1fr;gap:8px;padding:8px 12px;cursor:pointer;border-left:3px solid transparent}
   .ytz-row:hover{background:var(--yt-spec-badge-chip-background,#272727)}
+  .ytz-row.ytz-grp{border-left-color:rgba(232,179,57,.35)}
   .ytz-row.ytz-active{border-left-color:#ff0033;background:var(--yt-spec-badge-chip-background,#272727)}
   .ytz-ts{font-size:12px;color:var(--yt-spec-text-secondary,#aaa);padding-top:6px;font-variant-numeric:tabular-nums}
   .ytz-zh{line-height:1.15}
@@ -362,7 +363,12 @@
       src.onchange = e => actions.setSource(e.target.value);
       head.append(title, src);
     } else head.append(title);
-    head.append(mkToggle('ytz-top', 'zhuyin on top', CFG.zhuyinLayout === 'top'), mkToggle('ytz-py', 'pinyin', CFG.showPinyin), mkToggle('ytz-en', 'English', CFG.showEnglish), enSel, mkToggle('ytz-follow', 'follow', CFG.follow),
+    const unitSel = document.createElement('select'); unitSel.id = 'ytz-enunit';
+    unitSel.title = 'local MT: whole sentences read better, line by line lines up with the Chinese';
+    for (const [v, l] of [['sentence', 'by sentence'], ['line', 'line by line']]) {
+      const o = document.createElement('option'); o.value = v; o.textContent = l; o.selected = v === CFG.translateUnit; unitSel.appendChild(o); }
+    head.append(mkToggle('ytz-top', 'zhuyin on top', CFG.zhuyinLayout === 'top'), mkToggle('ytz-py', 'pinyin', CFG.showPinyin), mkToggle('ytz-en', 'English', CFG.showEnglish), enSel,
+      ...(actions.retranslate ? [unitSel] : []), mkToggle('ytz-follow', 'follow', CFG.follow),
       mkBtn('↻', 'Refetch this video\'s transcript', actions.reload), mkBtn('✕ cache', 'Clear all cached transcripts and refetch', actions.clearAll), ...(actions.extra ?? []));
     panel.appendChild(head);
 
@@ -382,7 +388,17 @@
     segs.forEach(addRow);
     panel.appendChild(body);
     let enMode = enMode0;
-    const applyEn = (mode) => { enMode = mode; const lines = en[mode] ?? []; enEls.forEach((el, i) => el.textContent = lines[i] ?? ''); };
+    // '↳' marks a line continuing the sentence translated above it: blank the text and
+    // bracket the whole group instead, so the English visibly belongs to those lines.
+    const applyEn = (mode) => {
+      enMode = mode;
+      const lines = en[mode] ?? [];
+      const cont = (i) => (lines[i] ?? '') === '↳';
+      enEls.forEach((el, i) => {
+        el.textContent = cont(i) ? '' : (lines[i] ?? '');
+        rows[i].classList.toggle('ytz-grp', cont(i) || cont(i + 1));
+      });
+    };
     applyEn(enMode0);
     // append more segments later (progressive ASR) without rebuilding or losing scroll position
     panel._addSegs = (more, newEn, newMeta) => {
@@ -405,6 +421,7 @@
     head.querySelector('#ytz-en').onchange = e => panel.classList.toggle('ytz-noen', !e.target.checked);
     head.querySelector('#ytz-follow').onchange = e => { CFG.follow = e.target.checked; };
     head.querySelector('#ytz-enmode').onchange = e => applyEn(e.target.value);
+    if (actions.retranslate) head.querySelector('#ytz-enunit').onchange = e => actions.retranslate(e.target.value);
 
     (document.querySelector('#secondary-inner') || document.querySelector('#secondary')).prepend(panel);
 
@@ -535,29 +552,32 @@
   // under its first line; continuation lines get '↳'. Keeps an index-aligned array and only translates
   // units it hasn't seen, in order, so it works while transcription is still running.
   function makeLocalTranslator(vid) {
-    let lines = [], seen = new Map(), chain = Promise.resolve();
+    let lines = [], seen = new Map(), chain = Promise.resolve(), lastSegs = [], lastDone = true;
     const push = () => { const p = document.getElementById('ytz-panel'); if (p?._addSegs && p._vid === vid) p._addSegs([], { local: lines.slice() }); };
-    return {
-      reset() { lines = []; seen = new Map(); },
-      update(segs, done = true) {
-        const units = CFG.translateUnit === 'sentence' ? groupSentences(segs) : segs.map((sg, i) => ({ first: i, last: i, text: sg.text }));
-        // while ASR is still running, the last unit may still be growing: skip it unless it ends with punctuation
-        const stable = units.filter((u, k) => done || k < units.length - 1 || /[。？！?!…]$/.test(u.text.trim()));
-        const todo = stable.filter(u => seen.get(u.first) !== u.text);
-        if (!todo.length) return;
-        todo.forEach(u => { seen.set(u.first, u.text); for (let i = u.first; i <= u.last; i++) lines[i] = i === u.first ? (lines[i] || '') : '↳'; });
-        for (let b = 0; b < todo.length; b += CFG.translateBatch) {
-          const batch = todo.slice(b, b + CFG.translateBatch);
-          chain = chain.then(async () => {
-            const p = document.getElementById('ytz-panel'); if (!p || p._vid !== vid) return;   // navigated away
-            const res = await translateLocal(batch.map(u => u.text));
-            if (!res) return;
-            batch.forEach((u, k) => { lines[u.first] = res[k]; });
-            push();
-          });
-        }
-      },
+    const reset = () => { lines = []; seen = new Map(); };
+    const update = (segs, done = true) => {
+      lastSegs = segs; lastDone = done;
+      const units = CFG.translateUnit === 'sentence' ? groupSentences(segs) : segs.map((sg, i) => ({ first: i, last: i, text: sg.text }));
+      // while ASR is still running, the last unit may still be growing: skip it unless it ends with punctuation
+      const stable = units.filter((u, k) => done || k < units.length - 1 || /[。？！?!…]$/.test(u.text.trim()));
+      const todo = stable.filter(u => seen.get(u.first) !== u.text);
+      if (!todo.length) return;
+      todo.forEach(u => { seen.set(u.first, u.text); for (let i = u.first; i <= u.last; i++) lines[i] = i === u.first ? (lines[i] || '') : '↳'; });
+      for (let b = 0; b < todo.length; b += CFG.translateBatch) {
+        const batch = todo.slice(b, b + CFG.translateBatch);
+        chain = chain.then(async () => {
+          const p = document.getElementById('ytz-panel'); if (!p || p._vid !== vid) return;   // navigated away
+          const res = await translateLocal(batch.map(u => u.text));
+          if (!res) return;
+          batch.forEach((u, k) => { lines[u.first] = res[k]; });
+          push();
+        });
+      }
     };
+    // Re-translate everything under a different unit. Sentence mode reads better;
+    // line mode lines up 1:1 with the Chinese.
+    const setUnit = (unit) => { CFG.translateUnit = unit; reset(); push(); update(lastSegs, lastDone); };
+    return { reset, update, setUnit };
   }
 
   // ---------------------------------------------------------------- local ASR fallback
@@ -571,6 +591,7 @@
     const retryBtn = ['retry', () => { currentVideo = null; init(); }];
     let shown = 0, lastJ = null;
     const tr = makeLocalTranslator(vid);
+    actions.retranslate = (unit) => tr.setUnit(unit);
     // line-length slider: re-chunks instantly from cached words and rebuilds the panel
     const mkSlider = () => {
       const l = document.createElement('label'); l.title = 'max characters per line';
@@ -674,9 +695,12 @@
       if (!zhSegs.length) { showStatus('Chinese track empty.', [retryBtn, whisperBtn]); return; }
       const en = { native: enN.length ? alignByOverlap(zhSegs, enN) : null,
                    translate: enT.length ? alignByOverlap(zhSegs, enT) : null };
+      // the local translator only runs when YouTube gave us no English at all
+      const tr = (!en.native && !en.translate) ? makeLocalTranslator(vid) : null;
+      if (tr) actions.retranslate = (unit) => tr.setUnit(unit);
       buildPanel(zhSegs, en, `${trackName(zh)}${zh.kind === 'asr' ? ' (auto)' : ''}${fromCache ? ' ·cached' : ''}`, D, actions);
       document.getElementById('ytz-panel')._vid = vid;
-      if (!en.native && !en.translate) makeLocalTranslator(vid).update(zhSegs);
+      if (tr) tr.update(zhSegs);
     } catch (e) { console.error('[yt-zhuyin]', e); showStatus('Failed: ' + e.message, [retryBtn, whisperBtn]); }
   }
 

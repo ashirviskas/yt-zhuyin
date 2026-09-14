@@ -2,6 +2,8 @@
 
 import sys
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, TypedDict
@@ -35,6 +37,9 @@ class Config:
     mt: str | None = "Helsinki-NLP/opus-mt-zh-en"
     audio_max_bytes: int = 2 * 1024**3
     lease_sec: int = 60
+    workers: int = 2            # videos transcribed at once
+    live_translate: bool = True # translate a job's lines while it is still transcribing
+    idle_unload_sec: int = 61    # drop model weights after this much idle; 0 = keep loaded
     cache: Path = field(default_factory=default_cache)
 
     @property
@@ -54,6 +59,42 @@ class Config:
     def mkdirs(self) -> None:
         self.cache.mkdir(parents=True, exist_ok=True)
         self.audio.mkdir(exist_ok=True)
+
+
+@contextmanager
+def hub_offline() -> "Iterator[None]":
+    """Block huggingface_hub from touching the network inside this block.
+
+    Cached weights still load; a model that isn't cached raises, and the caller
+    retries online. Without this, every load pings the Hub and warns about
+    unauthenticated requests even though nothing needs downloading.
+    """
+    import os
+
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    previous = os.environ.get("HF_HUB_OFFLINE")
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    try:
+        yield
+    except BaseException:
+        if previous is None:
+            _ = os.environ.pop("HF_HUB_OFFLINE", None)
+        else:
+            os.environ["HF_HUB_OFFLINE"] = previous
+        raise
+
+
+def release_memory() -> None:
+    """Collect, then ask glibc to return freed arenas. Without the trim, RSS barely
+    moves after dropping model weights even though the objects are gone."""
+    import ctypes
+    import gc
+
+    _ = gc.collect()
+    try:
+        _ = ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass  # not glibc; gc.collect() alone will have to do
 
 
 def log(*a: object) -> None:

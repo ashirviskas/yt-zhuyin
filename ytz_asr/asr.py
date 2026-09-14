@@ -2,20 +2,28 @@
 
 import subprocess
 import sys
+import threading
+from contextlib import contextmanager
 import time
 import traceback
+from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import Config, Json, Segment, log
+from . import Config, Json, Segment, hub_offline, log, release_memory
 from .jobs import JobStore
 
 if TYPE_CHECKING:
     from faster_whisper import WhisperModel
     from opencc import OpenCC
 
+# guards load/unload only. Jobs run concurrently against one shared model, so they
+# announce themselves with _inflight rather than holding this for the whole job.
+_model_lock = threading.Lock()
+_inflight = 0
 _model: "WhisperModel | None" = None
 _to_tw: "OpenCC | None" = None
+_last_used = 0.0
 
 # A punctuated traditional-Chinese prompt nudges whisper into emitting both
 # traditional characters AND punctuation.
@@ -23,22 +31,82 @@ _PROMPT = "以下是臺灣的繁體中文字幕，有標點符號。大家好，
 
 
 def load_model(cfg: Config) -> None:
-    global _model, _to_tw
-    from faster_whisper import WhisperModel
-
+    """Load the weights now. Called at startup; ensure_model() reloads after an unload."""
+    global _model, _to_tw, _last_used
     import os
 
-    log(f"loading faster-whisper '{cfg.model}' (int8, cpu)…")
-    _model = WhisperModel(
-        cfg.model, device="cpu", compute_type="int8", cpu_threads=os.cpu_count() or 4
-    )
-    try:
-        from opencc import OpenCC
+    from faster_whisper import WhisperModel
 
-        _to_tw = OpenCC("s2twp")  # simplified -> Taiwan traditional, incl. TW phrasing
-    except ImportError as e:
-        log("opencc unavailable, output may contain simplified characters:", e)
-    log("model ready")
+    with _model_lock:
+        log(f"loading faster-whisper '{cfg.model}' (int8, cpu)…")
+        # split the cores across workers so parallel jobs don't oversubscribe the CPU
+        cores = os.cpu_count() or 4
+        opts = {
+            "device": "cpu",
+            "compute_type": "int8",
+            "cpu_threads": max(1, cores // max(1, cfg.workers)),
+            "num_workers": max(1, cfg.workers),
+        }
+        try:
+            # already downloaded: skip the Hub round-trip entirely
+            with hub_offline():
+                _model = WhisperModel(cfg.model, local_files_only=True, **opts)
+        except (OSError, ValueError):
+            log("not in the local cache, fetching from the Hub (once)…")
+            _model = WhisperModel(cfg.model, **opts)
+        if _to_tw is None:
+            try:
+                from opencc import OpenCC
+
+                _to_tw = OpenCC("s2twp")  # simplified -> Taiwan traditional, incl. TW phrasing
+            except ImportError as e:
+                log("opencc unavailable, output may contain simplified characters:", e)
+        _last_used = time.time()
+        log("model ready")
+
+
+def ensure_model(cfg: Config) -> None:
+    global _last_used
+    with _model_lock:
+        if _model is None:
+            load_model(cfg)
+        _last_used = time.time()
+
+
+@contextmanager
+def model_in_use() -> "Iterator[None]":
+    """Mark the model as busy so the janitor leaves it alone while a job runs."""
+    global _inflight, _last_used
+    with _model_lock:
+        _inflight += 1
+    try:
+        yield
+    finally:
+        with _model_lock:
+            _inflight -= 1
+            _last_used = time.time()
+
+
+def inflight() -> int:
+    return _inflight
+
+
+def unload_if_idle(cfg: Config) -> bool:
+    """Drop the weights if nothing has used them lately. Skipped while a job holds the lock."""
+    global _model, _last_used
+    if not cfg.idle_unload_sec or _model is None or _inflight:
+        return False
+    if not _model_lock.acquire(blocking=False):
+        return False
+    try:
+        if _model is None or _inflight or time.time() - _last_used < cfg.idle_unload_sec:
+            return False
+        log(f"whisper idle for {cfg.idle_unload_sec}s, unloading")
+        _model = None
+        release_memory()
+        return True
+    finally:
+        _model_lock.release()
 
 
 def model_loaded() -> bool:
@@ -104,6 +172,7 @@ def transcribe(
     cfg: Config, jobs: JobStore, vid: str, path: Path
 ) -> tuple[list[Segment], list[Segment], list[Segment] | None, bool]:
     """Transcribe from the job's resume point. Returns (segs, words, en, finished)."""
+    ensure_model(cfg)
     if _model is None:
         raise RuntimeError("model not loaded")
     segs, words, resume_from = jobs.snapshot_progress(vid)
@@ -169,7 +238,8 @@ def worker(cfg: Config, jobs: JobStore) -> None:
             audio = download_audio(cfg, vid)
             jobs.mark(vid, "transcribing")
             t0 = time.time()
-            segs, words, en, finished = transcribe(cfg, jobs, vid, audio)
+            with model_in_use():  # keeps the janitor from unloading mid-job
+                segs, words, en, finished = transcribe(cfg, jobs, vid, audio)
             if not finished:
                 jobs.pause(vid)
                 continue
@@ -187,4 +257,8 @@ def info(cfg: Config) -> Json:
         "device": "cpu",
         "compute_type": "int8",
         "opencc": _to_tw is not None,
+        "idle_sec": round(time.time() - _last_used, 1) if _last_used else None,
+        "unload_after_sec": cfg.idle_unload_sec or None,
+        "workers": cfg.workers,
+        "inflight": _inflight,
     }

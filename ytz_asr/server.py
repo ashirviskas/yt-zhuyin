@@ -6,6 +6,7 @@ dashboard at /. CORS is open but the socket only listens on loopback.
 
 import json
 import os
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -18,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from . import Config, Json, log
-from . import asr, dashboard, translate
+from . import asr, dashboard, history, translate
 from .jobs import JobStore
 
 _MAX_LINES = 2000
@@ -152,16 +153,41 @@ def get_page() -> FileResponse:
     return FileResponse(dashboard.STATIC / "index.html", media_type="text/html")
 
 
-@app.get("/ui/stats", response_class=HTMLResponse)
-def get_stats_fragment() -> str:
-    return dashboard.stats(snapshot())
+@app.get("/ui/cards", response_class=HTMLResponse)
+def get_cards_fragment() -> str:
+    return dashboard.cards(snapshot())
+
+
+@app.get("/ui/jobs", response_class=HTMLResponse)
+def get_jobs_fragment() -> str:
+    return dashboard.jobs_list(snapshot())
+
+
+@app.get("/ui/charts", response_class=HTMLResponse)
+def get_charts_fragment() -> str:
+    return dashboard.charts(history.series(dashboard.CHART_SAMPLES))
+
+
+@app.get("/history")
+def get_history(limit: int = Query(history.KEEP)) -> Json:
+    return history.series(min(limit, history.KEEP))
 
 
 @app.get("/ui/job/{vid}", response_class=HTMLResponse)
 def get_job_fragment(vid: Vid) -> str:
-    segs, total, live = _jobs.preview(vid, dashboard.PREVIEW_LINES)
     audio = _cfg.audio / f"{vid}.m4a"
-    return dashboard.detail(vid, segs, total, live, audio if audio.exists() else None)
+    return dashboard.detail(vid, audio if audio.exists() else None)
+
+
+@app.get("/ui/lines/{vid}", response_class=HTMLResponse)
+def get_lines_fragment(vid: Vid, en: int = Query(0)) -> str:
+    segs, total, live = _jobs.preview(vid, dashboard.PREVIEW_LINES)
+    english = (
+        translate.preview(_cfg, [s["text"] for s in segs], dashboard.TRANSLATE_PER_POLL)
+        if en and segs
+        else None
+    )
+    return dashboard.lines(segs, total, live, english)
 
 
 @app.get("/audio/{vid}")
@@ -173,9 +199,17 @@ def get_audio(vid: Vid) -> FileResponse:
     return FileResponse(path, media_type="audio/mp4")
 
 
+def reading() -> history.Reading:
+    """One history sample: resident memory, what the jobs are doing, whether MT is running."""
+    _, _, totals = _jobs.report()
+    return (_memory()["rss_mb"] or 0.0, totals, translate.busy())
+
+
 def serve(cfg: Config, jobs: JobStore) -> None:
     global _cfg, _jobs
     _cfg, _jobs = cfg, jobs
+    # started here, not in main(): reading() needs the globals above to be set
+    threading.Thread(target=history.sampler, args=(reading,), daemon=True).start()
     log(f"listening on http://127.0.0.1:{cfg.port}  dashboard: http://127.0.0.1:{cfg.port}/")
     log(f"cache: {cfg.cache}")
     try:

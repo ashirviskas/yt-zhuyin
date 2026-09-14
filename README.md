@@ -72,14 +72,22 @@ Useful flags:
 | `--mt` | `Helsinki-NLP/opus-mt-zh-en` | model behind `/translate`; `none` disables local English |
 | `--audio-cache-gb` | `2.0` | keep downloaded audio up to this size (LRU); `0` discards it |
 | `--lease-sec` | `60` | pause a job when no browser tab has polled it for this long |
+| `--workers` | `2` | videos transcribed at once; CPU cores are split between them |
+| `--idle-unload-sec` | `61` | drop the model weights after this much idle time and reload on demand; `0` keeps them |
+| `--no-live-translate` | off | only translate on request instead of alongside transcription |
 
 ### Checking on it
 
 Open <http://127.0.0.1:8765/> for a dashboard: every job with a live progress bar, decode speed and ETA,
-memory and cache meters, and a per-job preview — click **preview** on a job to get the transcript so far
-next to a player for the cached audio, and click any line to seek the audio to it. It refreshes every two
-seconds via htmx; the preview panel sits outside the refreshing region, so audio keeps playing while the
-stats update.
+memory and cache meters, and two history charts — memory over the last ten minutes, and a stacked count of
+what was running when (transcribing, downloading, queued, translating). Hover either chart and both show a
+crosshair at that instant with the memory and the running counts, Grafana-style.
+
+Click **preview** on a job for the transcript next to a player for the cached audio. **follow** keeps the
+newest line in view while a job is still transcribing and tracks the playing line once you hit play;
+**English** shows a translation under each line, filling in a few lines per refresh so a poll never stalls.
+Click any line to seek the audio to it. The preview sits outside the refreshing regions, so audio keeps
+playing while the stats update.
 
 The same numbers as JSON: `GET /status` reports everything the server is doing — every job with its progress, throughput and ETA, plus
 memory, queue, model state and cache sizes. Add `?pretty=1` to read it in a browser tab.
@@ -116,7 +124,12 @@ audio in `~/.cache/yt-zhuyin/audio/`, and translated lines in `~/.cache/yt-zhuyi
 them to start over.
 
 The first run downloads the Whisper weights (~500 MB for `small`) and, on the first English line, the
-translation model (~300 MB). Both are cached by Hugging Face under `~/.cache/huggingface/`.
+translation model (~300 MB). Both are cached by Hugging Face under `~/.cache/huggingface/`. Later starts load from that cache without
+contacting the Hub at all. After `--idle-unload-sec` of no use the weights are dropped and memory handed back
+to the OS; the next job or translation reloads them in a few seconds.
+
+While a video is transcribing, its finished lines are translated in the background (`--no-live-translate`
+turns that off), so the English is already cached by the time the transcript completes.
 
 ### Running it as a service
 
@@ -153,7 +166,10 @@ The first start sits in "loading" for a minute or two while the model downloads.
 When YouTube offers neither an English track nor an auto-translation, the panel asks the server to translate
 the Chinese lines itself (`CFG.localTranslate`). Lines are grouped into sentences first, translated in
 batches, and cached in IndexedDB in the browser as well as on the server, so a video you revisit is instant.
-Set `CFG.localTranslate` to `false` to keep the panel Chinese-only.
+A sentence that spans several caption lines gets its English under the first line, with a bracket down the
+group's left edge so you can see which lines it covers. The **by sentence / line by line** dropdown in the
+panel header switches to translating every line on its own instead — worse English, but it lines up 1:1
+with the Chinese. Set `CFG.localTranslate` to `false` to keep the panel Chinese-only.
 
 ## Settings
 
@@ -231,6 +247,7 @@ package next to it:
 | `ytz_asr/translate.py` | the Marian zh→en model and its translation memory |
 | `ytz_asr/server.py` | FastAPI routes: the JSON API, the dashboard fragments, audio streaming |
 | `ytz_asr/dashboard.py` | renders the HTML fragments htmx swaps in |
+| `ytz_asr/history.py` | the sampler behind the charts: memory and per-state counts every 2s |
 | `ytz_asr/static/` | `index.html`, `dashboard.css`, `dashboard.js` — plain files, no build step |
 
 Needs Python 3.13+. FastAPI earns its place mainly through `FileResponse`: audio preview needs HTTP range
