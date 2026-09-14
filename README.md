@@ -75,7 +75,13 @@ Useful flags:
 
 ### Checking on it
 
-`GET /status` reports everything the server is doing — every job with its progress, throughput and ETA, plus
+Open <http://127.0.0.1:8765/> for a dashboard: every job with a live progress bar, decode speed and ETA,
+memory and cache meters, and a per-job preview — click **preview** on a job to get the transcript so far
+next to a player for the cached audio, and click any line to seek the audio to it. It refreshes every two
+seconds via htmx; the preview panel sits outside the refreshing region, so audio keeps playing while the
+stats update.
+
+The same numbers as JSON: `GET /status` reports everything the server is doing — every job with its progress, throughput and ETA, plus
 memory, queue, model state and cache sizes. Add `?pretty=1` to read it in a browser tab.
 
 ```sh
@@ -223,10 +229,13 @@ package next to it:
 | `ytz_asr/jobs.py` | `Job` and `JobStore` — every piece of mutable state, behind one lock |
 | `ytz_asr/asr.py` | yt-dlp download, the audio LRU cache, Whisper transcription, the worker loop |
 | `ytz_asr/translate.py` | the Marian zh→en model and its translation memory |
-| `ytz_asr/server.py` | the HTTP handler, routes, and the `/status` payload |
+| `ytz_asr/server.py` | FastAPI routes: the JSON API, the dashboard fragments, audio streaming |
+| `ytz_asr/dashboard.py` | renders the HTML fragments htmx swaps in |
+| `ytz_asr/static/` | `index.html`, `dashboard.css`, `dashboard.js` — plain files, no build step |
 
-Needs Python 3.13+. It stays on `http.server` rather than a web framework: three endpoints on loopback don't
-justify the dependency.
+Needs Python 3.13+. FastAPI earns its place mainly through `FileResponse`: audio preview needs HTTP range
+requests so the browser can seek, which `http.server` doesn't do. htmx comes from unpkg at `@2`, so it
+tracks the latest 2.x; the dashboard is the only thing that needs a network fetch.
 
 Type checking is basedpyright in standard mode, run against the environment uv builds for the script:
 

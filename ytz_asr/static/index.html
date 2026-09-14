@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>yt-zhuyin ASR</title>
+<script src="https://unpkg.com/htmx.org@2"></script>
+<link rel="stylesheet" href="/static/dashboard.css">
+</head>
+<body>
+<header>
+  <h1>yt-zhuyin<span class="sub">local ASR service</span></h1>
+  <div class="live"><span class="dot"></span>refreshing every 2s</div>
+</header>
+
+<!-- only this block polls; #detail stays put so playing audio is never swapped away -->
+<main hx-get="/ui/stats" hx-trigger="load, every 2s" hx-swap="innerHTML">
+  <p class="muted">connecting…</p>
+</main>
+
+<section id="detail"></section>
+<script src="/static/dashboard.js"></script>
+</body>
+</html>

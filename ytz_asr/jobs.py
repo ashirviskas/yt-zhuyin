@@ -180,6 +180,25 @@ class JobStore:
         with self._cv:
             return time.time() - self._jobs[vid].last_seen > self._cfg.lease_sec
 
+    def preview(self, vid: str, limit: int) -> tuple[list[Segment], int, bool]:
+        """Lines for the dashboard. A live job shows its tail, a finished one its start."""
+        with self._cv:
+            job = self._jobs.get(vid)
+            segs = list(job.segs) if job else []
+            live = bool(job) and not job.done
+        if not segs:
+            path = self._cfg.result(vid)
+            if path.exists():
+                try:
+                    d: Json = json.loads(path.read_text(encoding="utf-8"))
+                    segs = d.get("segs") or []
+                    live = False
+                except (OSError, ValueError) as e:
+                    log("bad result file:", e)
+        total = len(segs)
+        window = segs[-limit:] if live else segs[:limit]
+        return window, total, live
+
     # ---- status ---------------------------------------------------------
 
     def report(self) -> tuple[list[Json], list[str], dict[str, int]]:

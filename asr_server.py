@@ -9,6 +9,8 @@
 #   "transformers>=4.40",
 #   "sentencepiece",
 #   "sacremoses",
+#   "fastapi",
+#   "uvicorn",
 # ]
 #
 # [[tool.uv.index]]
@@ -31,6 +33,8 @@ Endpoints (CORS open, only bound to 127.0.0.1):
     POST /translate {"lines": [...zh...]}  -> {"lines": [...en...]}   (opus-mt-zh-en on CPU, cached by text)
     GET /status[?pretty=1]      -> every job with its progress, speed and ETA, plus memory,
                                    queue, model state and cache sizes
+    GET /                       -> htmx dashboard: live stats, progress bars, transcript and
+                                   audio preview per job
     DELETE /transcript/<videoId>[?audio=1]  -> drop the cache entry (and its audio)
 
 First GET for a video starts the job; subsequent GETs return progress (segments so far) and act as a
@@ -39,7 +43,8 @@ its partial result kept; the next GET resumes from where it stopped. Queued jobs
 are skipped the same way, so closing the tab stops the CPU burn within a minute.
 Results are cached in ~/.cache/yt-zhuyin/<videoId>.json; downloaded audio in ~/.cache/yt-zhuyin/audio/ (LRU, --audio-cache-gb).
 
-Code lives in ytz_asr/: jobs.py (state), asr.py (audio + whisper), translate.py (zh->en), server.py (HTTP).
+Code lives in ytz_asr/: jobs.py (state), asr.py (audio + whisper), translate.py (zh->en),
+server.py (FastAPI routes), dashboard.py (the HTML).
 """
 
 import argparse
