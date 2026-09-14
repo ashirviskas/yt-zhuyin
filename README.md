@@ -120,7 +120,7 @@ Set `CFG.localTranslate` to `false` to keep the panel Chinese-only.
 
 ## Settings
 
-Open the script in your userscript manager and edit the `CFG` block at the top. The ones you're most likely to touch:
+Open the script in your userscript manager and edit the `CFG` block at the top (in this repo that block is `src/00-config.js`). The ones you're most likely to touch:
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -141,6 +141,46 @@ YouTube's caption endpoint needs a per-session token that the player attaches to
 
 Each caption line is segmented with a unigram maximum-likelihood search over the dictionary (Viterbi over word frequencies), so longer known words win over character-by-character readings. Pinyin is generated from the zhuyin through a fixed table, so the two can never disagree.
 
+## Building the userscript
+
+`yt-zhuyin-transcript.user.js` is generated — **edit `src/`, not that file.** The whole script is one IIFE
+sharing a single closure, so the build is ordered concatenation and nothing more: no bundler, no npm, no
+module system. `build.py` is stdlib-only.
+
+```sh
+python3 build.py          # or: uv run build.py
+python3 build.py --check  # exits 1 if the committed userscript is stale
+```
+
+Sources are concatenated in filename order, which is what the numeric prefixes are for — adding a file never
+means editing `build.py`:
+
+| File | Contents |
+|---|---|
+| `src/header.txt` | the `==UserScript==` block (`@version` lives here — the only copy) and the pipeline comment |
+| `src/00-config.js` | `CFG` |
+| `src/10-segment.js` | unigram max-likelihood segmentation |
+| `src/20-pinyin.js` | zhuyin normalisation and the zhuyin → pinyin tables |
+| `src/30-helpers.js` | `log`, `sleep`, `waitFor`, `fmtTime`, `trackName` |
+| `src/40-captions.js` | track selection, timedtext URL harvesting, fetching, overlap alignment |
+| `src/50-cache.js` | IndexedDB: transcript cache and translation memory |
+| `src/60-render.js` | CSS, `renderZh`, `buildPanel`, `showStatus` |
+| `src/70-chunk.js` | re-chunking whisper word timestamps into readable lines |
+| `src/80-translate.js` | sentence grouping and the local-translation driver |
+| `src/85-asr.js` | the local Whisper path |
+| `src/90-main.js` | `init()` and the navigation hook |
+
+The generated file stays committed at the repo root, along with `zhuyin-dict.js` — both are public URLs that
+installed copies fetch (`@require`, `@downloadURL`), so neither can move into a `dist/` directory without
+breaking every existing install.
+
+If you want the staleness check enforced, `.git/hooks/pre-commit`:
+
+```sh
+#!/bin/sh
+exec python3 build.py --check
+```
+
 ## Rebuilding the dictionary
 
 `build_zhuyin_dict.py` reads McBopomofo's data files and writes `zhuyin-dict.js`. To rebuild:
@@ -155,7 +195,7 @@ python3 build_zhuyin_dict.py
 
 There's a small `OVERRIDE` table near the top of the script for characters whose IME-preferred reading isn't the textbook one (particles like 嗎, 呢, 吧 read with a neutral tone). Add to it in zhuyin.
 
-After pushing a new `zhuyin-dict.js`, bump `@version` in the userscript so managers refetch the `@require`, and purge the jsDelivr cache or wait up to 12 hours:
+After pushing a new `zhuyin-dict.js`, bump `@version` in `src/header.txt`, rebuild, and push the regenerated userscript so managers refetch the `@require`, and purge the jsDelivr cache or wait up to 12 hours:
 
     https://purge.jsdelivr.net/gh/ashirviskas/yt-zhuyin@main/zhuyin-dict.js
 

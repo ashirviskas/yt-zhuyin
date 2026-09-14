@@ -1,0 +1,25 @@
+// ==UserScript==
+// @name         YouTube 注音 transcript (zh-TW + zhuyin, pinyin optional, English)
+// @namespace    local.yt-zhuyin
+// @version      0.6.1
+// @description  Side panel: traditional Chinese captions segmented into words with zhuyin from a Taiwan (McBopomofo) dictionary, optional pinyin derived from the zhuyin, English line, click-to-seek.
+// @match        https://www.youtube.com/*
+// @homepageURL  https://github.com/ashirviskas/yt-zhuyin
+// @downloadURL  https://raw.githubusercontent.com/ashirviskas/yt-zhuyin/main/yt-zhuyin-transcript.user.js
+// @updateURL    https://raw.githubusercontent.com/ashirviskas/yt-zhuyin/main/yt-zhuyin-transcript.user.js
+// @require      https://cdn.jsdelivr.net/gh/ashirviskas/yt-zhuyin@main/zhuyin-dict.js
+// @grant        none
+// @run-at       document-idle
+// ==/UserScript==
+
+/*
+ * Pipeline
+ *  1. Ask the player to load a caption track -> it issues a timedtext request carrying its own
+ *     PoT token. A PerformanceObserver catches that URL; we reuse it with different lang/tlang.
+ *  2. Fetch: zh track, zh auto-translated to en (1:1 timing), native en track if present.
+ *  3. Each zh line -> unigram max-likelihood segmentation over the zhuyin-native dictionary
+ *     (ZHUYIN_DICT from @require; built from McBopomofo BPMFMappings + phrase.occ).
+ *  4. Render: word groups, one vertical zhuyin column per character, hover shows alternate
+ *     readings for polyphonic single characters. Pinyin is derived FROM the zhuyin, only if on.
+ */
+
