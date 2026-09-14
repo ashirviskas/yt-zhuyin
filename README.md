@@ -73,6 +73,37 @@ Useful flags:
 | `--audio-cache-gb` | `2.0` | keep downloaded audio up to this size (LRU); `0` discards it |
 | `--lease-sec` | `60` | pause a job when no browser tab has polled it for this long |
 
+### Checking on it
+
+`GET /status` reports everything the server is doing — every job with its progress, throughput and ETA, plus
+memory, queue, model state and cache sizes. Add `?pretty=1` to read it in a browser tab.
+
+```sh
+curl -s localhost:8765/status?pretty=1
+```
+
+```json
+{
+  "server": { "pid": 2388633, "uptime_sec": 27.0, "port": 8765, "lease_sec": 60 },
+  "model":  { "name": "small", "loaded": true, "device": "cpu", "compute_type": "int8", "opencc": true },
+  "mt":     { "name": "Helsinki-NLP/opus-mt-zh-en", "loaded": false, "cache_entries": 65, "unsaved": 0 },
+  "memory": { "rss_mb": 229.7, "peak_rss_mb": 285.3, "system_total_mb": 7737.0, "system_available_mb": 2957.4 },
+  "jobs": [
+    { "vid": "dQw4w9WgXcQ", "status": "transcribing", "progress": 0.41,
+      "segments": 128, "words": 1902, "audio_duration_sec": 412.0, "transcribed_sec": 168.9,
+      "elapsed_sec": 73.4, "speed_x": 2.3, "eta_sec": 106,
+      "age_sec": 80.1, "last_seen_sec_ago": 1.2, "lease_expires_in_sec": 58.8, "error": null }
+  ],
+  "queue": [],
+  "totals": { "transcribing": 1 },
+  "cache": { "audio_mb": 107.5, "audio_limit_mb": 2147, "audio_files": 5,
+             "transcripts": 4, "partials": 0, "dir": "/home/you/.cache/yt-zhuyin" }
+}
+```
+
+`speed_x` is audio seconds decoded per wall second, so `2.3` means a 10-minute video takes about 4½ minutes.
+`lease_expires_in_sec` counts down to the pause described below.
+
 Jobs are tied to a polling tab: close the tab and the current job pauses within a minute, keeping whatever it
 had decoded; reopening resumes from there. Finished transcripts live in `~/.cache/yt-zhuyin/<videoId>.json`,
 audio in `~/.cache/yt-zhuyin/audio/`, and translated lines in `~/.cache/yt-zhuyin/mt_cache.json`. Delete any of
@@ -180,6 +211,32 @@ If you want the staleness check enforced, `.git/hooks/pre-commit`:
 #!/bin/sh
 exec python3 build.py --check
 ```
+
+## Working on the Python service
+
+`asr_server.py` is the entry point — argparse, the PEP 723 dependency block, and wiring. The rest is a small
+package next to it:
+
+| File | Contents |
+|---|---|
+| `ytz_asr/__init__.py` | `Config`, shared types, `log()` |
+| `ytz_asr/jobs.py` | `Job` and `JobStore` — every piece of mutable state, behind one lock |
+| `ytz_asr/asr.py` | yt-dlp download, the audio LRU cache, Whisper transcription, the worker loop |
+| `ytz_asr/translate.py` | the Marian zh→en model and its translation memory |
+| `ytz_asr/server.py` | the HTTP handler, routes, and the `/status` payload |
+
+Needs Python 3.13+. It stays on `http.server` rather than a web framework: three endpoints on loopback don't
+justify the dependency.
+
+Type checking is basedpyright in standard mode, run against the environment uv builds for the script:
+
+```sh
+uv sync --script asr_server.py
+uvx basedpyright --pythonpath "$(uv python find --script asr_server.py)"
+```
+
+That should report zero errors. There is one `# pyright: ignore` in `translate.py`, for an upstream bug where
+transformers' own stubs won't admit `MarianMTModel` to their generation protocol.
 
 ## Rebuilding the dictionary
 

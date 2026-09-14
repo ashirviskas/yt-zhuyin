@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+
+# uv writes this next to the script when you pin deps with `uv lock --script`
+asr_server.py.lock
+
+.venv/
+venv/
+
+# editors / tooling
+.idea/
+.vscode/
+.ruff_cache/

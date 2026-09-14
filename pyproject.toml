@@ -1,0 +1,15 @@
+[project]
+name = "yt-zhuyin"
+version = "0.6.1"
+description = "YouTube 注音 transcript userscript, with a local Whisper ASR service"
+authors = [{ name = "Matas Minelga" }]
+requires-python = ">=3.13"
+license = "MIT"
+
+[tool.uv]
+package = false          # asr_server.py carries its own PEP 723 deps; never build this as a package
+
+[tool.basedpyright]
+typeCheckingMode = "standard"
+pythonVersion = "3.13"
+include = ["ytz_asr", "asr_server.py", "build.py"]
