@@ -173,10 +173,12 @@
 
   function showStatus(msg, buttons = []) {
     injectCss();
-    let panel = document.getElementById('ytz-panel');
-    if (!panel) { panel = document.createElement('div'); panel.id = 'ytz-panel';
-      (document.querySelector('#secondary-inner') || document.querySelector('#secondary'))?.prepend(panel); }
-    panel.replaceChildren(); const d = document.createElement('div'); d.id = 'ytz-status'; d.textContent = msg;
+    // always a fresh element: a reused one would keep the old panel's _addSegs/_owner and its highlight timer,
+    // and a later source switch would append lines into a body that is no longer in the page
+    const old = document.getElementById('ytz-panel'); old?._cleanup?.(); old?.remove();
+    const panel = document.createElement('div'); panel.id = 'ytz-panel';
+    (document.querySelector('#secondary-inner') || document.querySelector('#secondary'))?.prepend(panel);
+    const d = document.createElement('div'); d.id = 'ytz-status'; d.textContent = msg;
     if (buttons.length) {
       const row = document.createElement('div'); row.id = 'ytz-head'; row.style.borderTop = '1px solid var(--yt-spec-10-percent-layer,#333)'; row.style.borderBottom = 'none';
       for (const [label, fn] of buttons) { const b = document.createElement('button'); b.textContent = label; b.onclick = fn; row.appendChild(b); }

@@ -57,10 +57,11 @@
       const en = { native: enN.length ? alignByOverlap(zhSegs, enN) : null,
                    translate: enT.length ? alignByOverlap(zhSegs, enT) : null };
       // the local translator only runs when YouTube gave us no English at all
-      const tr = (!en.native && !en.translate) ? makeLocalTranslator(vid) : null;
+      const owner = Symbol(vid);
+      const tr = (!en.native && !en.translate) ? makeLocalTranslator(owner) : null;
       if (tr) actions.retranslate = (unit) => tr.setUnit(unit);
       buildPanel(zhSegs, en, `${trackName(zh)}${zh.kind === 'asr' ? ' (auto)' : ''}${fromCache ? ' ·cached' : ''}`, D, actions);
-      document.getElementById('ytz-panel')._vid = vid;
+      document.getElementById('ytz-panel')._owner = owner;
       if (tr) tr.update(zhSegs);
     } catch (e) { console.error('[yt-zhuyin]', e); showStatus('Failed: ' + e.message, [retryBtn, whisperBtn]); }
   }

@@ -25,9 +25,9 @@
     let cur = null;
     segs.forEach((sg, i) => {
       if (!cur) cur = { first: i, last: i, text: sg.text };
-      else { cur.last = i; cur.text += sg.text; }
+      else { cur.last = i; cur.text += (/[0-9A-Za-z]$/.test(cur.text) && /^[0-9A-Za-z]/.test(sg.text) ? ' ' : '') + sg.text; }   // keep a space between latin words across lines
       const next = segs[i + 1];
-      const len = [...cur.text].length;
+      const len = textWidth(cur.text);
       if (END.test(sg.text.trim()) || !next || next.start - sg.end > CFG.sentenceGapSec || len >= CFG.sentenceMaxChars) { out.push(cur); cur = null; }
     });
     return out;
@@ -36,9 +36,11 @@
   // Incremental translator for the current panel. Sentence mode: the English for a sentence is shown
   // under its first line; continuation lines get '↳'. Keeps an index-aligned array and only translates
   // units it hasn't seen, in order, so it works while transcription is still running.
-  function makeLocalTranslator(vid) {
+  // `owner` is the token the caller stamps on its panel (_owner): the video id alone can't tell a
+  // caption-track panel from a whisper panel for the same video.
+  function makeLocalTranslator(owner) {
     let lines = [], seen = new Map(), chain = Promise.resolve(), lastSegs = [], lastDone = true;
-    const push = () => { const p = document.getElementById('ytz-panel'); if (p?._addSegs && p._vid === vid) p._addSegs([], { local: lines.slice() }); };
+    const push = () => { const p = document.getElementById('ytz-panel'); if (p?._addSegs && p._owner === owner) p._addSegs([], { local: lines.slice() }); };
     const reset = () => { lines = []; seen = new Map(); };
     const update = (segs, done = true) => {
       lastSegs = segs; lastDone = done;
@@ -51,7 +53,7 @@
       for (let b = 0; b < todo.length; b += CFG.translateBatch) {
         const batch = todo.slice(b, b + CFG.translateBatch);
         chain = chain.then(async () => {
-          const p = document.getElementById('ytz-panel'); if (!p || p._vid !== vid) return;   // navigated away
+          const p = document.getElementById('ytz-panel'); if (!p || p._owner !== owner) return;   // navigated away or source switched
           const res = await translateLocal(batch.map(u => u.text));
           if (!res) return;
           batch.forEach((u, k) => { lines[u.first] = res[k]; });

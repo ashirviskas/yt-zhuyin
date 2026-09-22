@@ -8,9 +8,12 @@
     '比如', '例如', '其實', '當時', '現在', '這些', '那些', '這個', '那個', '這樣', '那樣', '我們', '你們', '他們', '它們',
     '這', '那', '它', '他', '她', '我', '你', '當', '在', '把', '讓', '等', '而', '並', '或', '或者', '還是', '甚至'];
   function chunkWords(words, D, maxChars = CFG.asrMaxChars, minChars = CFG.asrMinChars, gap = CFG.asrGapSec) {
-    // flatten to characters with timing
-    const chars = [];
-    for (const w of words) for (const ch of [...w.text]) chars.push({ ch, start: w.start, end: w.end });
+    // whisper's word tokens arrive stripped, so put a space back between two adjacent latin words
+    const chars = [], LATIN = /[0-9A-Za-z]/;
+    for (const w of words) {
+      if (chars.length && LATIN.test(chars.at(-1).ch) && LATIN.test([...w.text][0] ?? '')) chars.push({ ch: ' ', start: w.start, end: w.start });
+      for (const ch of [...w.text]) chars.push({ ch, start: w.start, end: w.end });
+    }
     if (!chars.length) return [];
     const text = chars.map(c => c.ch).join('');
     const boundary = new Set(); let pos = 0;
@@ -29,10 +32,13 @@
     };
     const out = []; let lineStart = 0;
     while (lineStart < chars.length) {
-      const hardEnd = Math.min(chars.length - 1, lineStart + maxChars - 1);
-      let best = -1, bestScore = 0, fallback = -1;
+      // limits are in Chinese cells: walk forward accumulating display width instead of counting characters
+      let hardEnd = lineStart, width = charWidth(chars[lineStart].ch);
+      while (hardEnd + 1 < chars.length && width + charWidth(chars[hardEnd + 1].ch) <= maxChars) width += charWidth(chars[++hardEnd].ch);
+      let best = -1, bestScore = 0, fallback = -1, len = 0;
       for (let i = lineStart; i <= hardEnd; i++) {
-        const len = i - lineStart + 1, sc = scoreCut(i);
+        len += charWidth(chars[i].ch);
+        const sc = scoreCut(i);
         if (sc < 0) continue;
         fallback = i;
         if (len < minChars && sc < 100) continue;
@@ -44,7 +50,7 @@
         if (best < 0) { best = hardEnd; for (let i = hardEnd; i < chars.length; i++) if (boundary.has(i + 1)) { best = i; break; } }
       }
       const slice = chars.slice(lineStart, best + 1);
-      out.push({ start: slice[0].start, end: slice.at(-1).end, text: slice.map(c => c.ch).join('') });
+      out.push({ start: slice[0].start, end: slice.at(-1).end, text: slice.map(c => c.ch).join('').trim() });
       lineStart = best + 1;
     }
     return out;

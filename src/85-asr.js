@@ -8,7 +8,8 @@
     };
     const retryBtn = ['retry', () => { currentVideo = null; init(); }];
     let shown = 0, lastJ = null;
-    const tr = makeLocalTranslator(vid);
+    const owner = Symbol(vid);   // identifies panels built by this run (see makeLocalTranslator)
+    const tr = makeLocalTranslator(owner);
     actions.retranslate = (unit) => tr.setUnit(unit);
     // line-length slider: re-chunks instantly from cached words and rebuilds the panel
     const mkSlider = () => {
@@ -25,7 +26,7 @@
       const en = { translate: j.en?.length ? alignByOverlap(segs, j.en) : null, native: null };
       const meta = `ASR (whisper)${j.done ? '' : ` · ${Math.round((j.progress ?? 0) * 100)}%`}`;
       buildPanel(segs, en, meta, D, actions);
-      const p = document.getElementById('ytz-panel'); p._vid = vid; p._lastStart = segs.at(-1)?.start ?? -1;
+      const p = document.getElementById('ytz-panel'); p._owner = owner; p._lastStart = segs.at(-1)?.start ?? -1;
       shown = segs.length;
       tr.reset(); tr.update(segs, j.done);
     };
@@ -43,8 +44,8 @@
         // word-chunked lines can change retroactively as more words arrive, so only append lines whose start is past everything shown
         const prevEnd = panel?._lastStart ?? -1;
         const fresh = segs.filter(x => x.start > prevEnd);
-        if (panel?._addSegs && panel._vid === vid) { panel._addSegs(fresh, en, meta); panel._lastStart = segs.at(-1)?.start ?? prevEnd; }
-        else { buildPanel(segs, en, meta, D, actions); const p = document.getElementById('ytz-panel'); p._vid = vid; p._lastStart = segs.at(-1)?.start ?? -1; }
+        if (panel?._addSegs && panel._owner === owner) { panel._addSegs(fresh, en, meta); panel._lastStart = segs.at(-1)?.start ?? prevEnd; }
+        else { buildPanel(segs, en, meta, D, actions); const p = document.getElementById('ytz-panel'); p._owner = owner; p._lastStart = segs.at(-1)?.start ?? -1; }
         shown = segs.length;
         tr.update(segs, j.done);
       } else if (!segs.length) {

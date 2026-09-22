@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube 注音 transcript (zh-TW + zhuyin, pinyin optional, English)
 // @namespace    local.yt-zhuyin
-// @version      0.6.2
+// @version      0.6.4
 // @description  Side panel: traditional Chinese captions segmented into words with zhuyin from a Taiwan (McBopomofo) dictionary, optional pinyin derived from the zhuyin, English line, click-to-seek.
 // @match        https://www.youtube.com/*
 // @homepageURL  https://github.com/ashirviskas/yt-zhuyin
@@ -49,11 +49,11 @@
     localTranslate: true,       // ask the local server for a per-line English translation when YouTube has none
     translateBatch: 24,         // sentences per /translate request; smaller = English shows up sooner on long videos
     translateUnit: 'sentence',  // 'sentence': group lines into sentences before translating (English shown on the first line) | 'line'
-    sentenceMaxChars: 60,       // sentence grouping: force a break after this many characters
+    sentenceMaxChars: 60,       // sentence grouping: force a break after this many Chinese cells (a latin letter counts 1/3)
     sentenceGapSec: 1.5,        // sentence grouping: a pause longer than this ends a sentence
     mtCacheMax: 20000,          // translated lines kept in IndexedDB (oldest evicted)         // lines per /translate request; smaller = English shows up sooner on long videos
-    asrMaxChars: 14,            // re-chunk whisper word timestamps into lines of at most this many characters
-    asrMinChars: 4,             // don't cut on a pause before this many characters
+    asrMaxChars: 14,            // re-chunk whisper word timestamps into lines of at most this many Chinese cells (a latin letter counts 1/3)
+    asrMinChars: 4,             // don't cut on a pause before this many Chinese cells
     asrGapSec: 0.7,             // a silence longer than this ends a line            // how often to poll the server while it transcribes
     pollMs: 100,                // highlight update interval; one getCurrentTime() call per tick
     debug: true,
@@ -123,6 +123,11 @@
     return (h ? `${h}:${String(m).padStart(2, '0')}` : m) + ':' + String(s).padStart(2, '0'); };
   const trackName = (t) => t.name?.simpleText ?? t.name?.runs?.map(r => r.text).join('') ?? t.languageCode;
 
+  // Display width in "Chinese cells": a CJK character with its zhuyin column is 1; a latin letter,
+  // digit or space is about a third of that. Line-length limits are expressed in these units.
+  const CJK = /[\u3400-\u9fff\uf900-\ufaff\u3000-\u303f\uff00-\uffef]/;
+  const charWidth = (ch) => CJK.test(ch) ? 1 : 1 / 3;
+  const textWidth = (text) => { let w = 0; for (const ch of text) w += charWidth(ch); return w; };
   function pickZhTrack(tracks) {
     for (const code of CFG.zhPreference) {
       const t = tracks.find(t => t.languageCode === code && t.kind !== 'asr') || tracks.find(t => t.languageCode === code);
@@ -449,10 +454,12 @@
 
   function showStatus(msg, buttons = []) {
     injectCss();
-    let panel = document.getElementById('ytz-panel');
-    if (!panel) { panel = document.createElement('div'); panel.id = 'ytz-panel';
-      (document.querySelector('#secondary-inner') || document.querySelector('#secondary'))?.prepend(panel); }
-    panel.replaceChildren(); const d = document.createElement('div'); d.id = 'ytz-status'; d.textContent = msg;
+    // always a fresh element: a reused one would keep the old panel's _addSegs/_owner and its highlight timer,
+    // and a later source switch would append lines into a body that is no longer in the page
+    const old = document.getElementById('ytz-panel'); old?._cleanup?.(); old?.remove();
+    const panel = document.createElement('div'); panel.id = 'ytz-panel';
+    (document.querySelector('#secondary-inner') || document.querySelector('#secondary'))?.prepend(panel);
+    const d = document.createElement('div'); d.id = 'ytz-status'; d.textContent = msg;
     if (buttons.length) {
       const row = document.createElement('div'); row.id = 'ytz-head'; row.style.borderTop = '1px solid var(--yt-spec-10-percent-layer,#333)'; row.style.borderBottom = 'none';
       for (const [label, fn] of buttons) { const b = document.createElement('button'); b.textContent = label; b.onclick = fn; row.appendChild(b); }
@@ -470,9 +477,12 @@
     '比如', '例如', '其實', '當時', '現在', '這些', '那些', '這個', '那個', '這樣', '那樣', '我們', '你們', '他們', '它們',
     '這', '那', '它', '他', '她', '我', '你', '當', '在', '把', '讓', '等', '而', '並', '或', '或者', '還是', '甚至'];
   function chunkWords(words, D, maxChars = CFG.asrMaxChars, minChars = CFG.asrMinChars, gap = CFG.asrGapSec) {
-    // flatten to characters with timing
-    const chars = [];
-    for (const w of words) for (const ch of [...w.text]) chars.push({ ch, start: w.start, end: w.end });
+    // whisper's word tokens arrive stripped, so put a space back between two adjacent latin words
+    const chars = [], LATIN = /[0-9A-Za-z]/;
+    for (const w of words) {
+      if (chars.length && LATIN.test(chars.at(-1).ch) && LATIN.test([...w.text][0] ?? '')) chars.push({ ch: ' ', start: w.start, end: w.start });
+      for (const ch of [...w.text]) chars.push({ ch, start: w.start, end: w.end });
+    }
     if (!chars.length) return [];
     const text = chars.map(c => c.ch).join('');
     const boundary = new Set(); let pos = 0;
@@ -491,10 +501,13 @@
     };
     const out = []; let lineStart = 0;
     while (lineStart < chars.length) {
-      const hardEnd = Math.min(chars.length - 1, lineStart + maxChars - 1);
-      let best = -1, bestScore = 0, fallback = -1;
+      // limits are in Chinese cells: walk forward accumulating display width instead of counting characters
+      let hardEnd = lineStart, width = charWidth(chars[lineStart].ch);
+      while (hardEnd + 1 < chars.length && width + charWidth(chars[hardEnd + 1].ch) <= maxChars) width += charWidth(chars[++hardEnd].ch);
+      let best = -1, bestScore = 0, fallback = -1, len = 0;
       for (let i = lineStart; i <= hardEnd; i++) {
-        const len = i - lineStart + 1, sc = scoreCut(i);
+        len += charWidth(chars[i].ch);
+        const sc = scoreCut(i);
         if (sc < 0) continue;
         fallback = i;
         if (len < minChars && sc < 100) continue;
@@ -506,7 +519,7 @@
         if (best < 0) { best = hardEnd; for (let i = hardEnd; i < chars.length; i++) if (boundary.has(i + 1)) { best = i; break; } }
       }
       const slice = chars.slice(lineStart, best + 1);
-      out.push({ start: slice[0].start, end: slice.at(-1).end, text: slice.map(c => c.ch).join('') });
+      out.push({ start: slice[0].start, end: slice.at(-1).end, text: slice.map(c => c.ch).join('').trim() });
       lineStart = best + 1;
     }
     return out;
@@ -539,9 +552,9 @@
     let cur = null;
     segs.forEach((sg, i) => {
       if (!cur) cur = { first: i, last: i, text: sg.text };
-      else { cur.last = i; cur.text += sg.text; }
+      else { cur.last = i; cur.text += (/[0-9A-Za-z]$/.test(cur.text) && /^[0-9A-Za-z]/.test(sg.text) ? ' ' : '') + sg.text; }   // keep a space between latin words across lines
       const next = segs[i + 1];
-      const len = [...cur.text].length;
+      const len = textWidth(cur.text);
       if (END.test(sg.text.trim()) || !next || next.start - sg.end > CFG.sentenceGapSec || len >= CFG.sentenceMaxChars) { out.push(cur); cur = null; }
     });
     return out;
@@ -550,9 +563,11 @@
   // Incremental translator for the current panel. Sentence mode: the English for a sentence is shown
   // under its first line; continuation lines get '↳'. Keeps an index-aligned array and only translates
   // units it hasn't seen, in order, so it works while transcription is still running.
-  function makeLocalTranslator(vid) {
+  // `owner` is the token the caller stamps on its panel (_owner): the video id alone can't tell a
+  // caption-track panel from a whisper panel for the same video.
+  function makeLocalTranslator(owner) {
     let lines = [], seen = new Map(), chain = Promise.resolve(), lastSegs = [], lastDone = true;
-    const push = () => { const p = document.getElementById('ytz-panel'); if (p?._addSegs && p._vid === vid) p._addSegs([], { local: lines.slice() }); };
+    const push = () => { const p = document.getElementById('ytz-panel'); if (p?._addSegs && p._owner === owner) p._addSegs([], { local: lines.slice() }); };
     const reset = () => { lines = []; seen = new Map(); };
     const update = (segs, done = true) => {
       lastSegs = segs; lastDone = done;
@@ -565,7 +580,7 @@
       for (let b = 0; b < todo.length; b += CFG.translateBatch) {
         const batch = todo.slice(b, b + CFG.translateBatch);
         chain = chain.then(async () => {
-          const p = document.getElementById('ytz-panel'); if (!p || p._vid !== vid) return;   // navigated away
+          const p = document.getElementById('ytz-panel'); if (!p || p._owner !== owner) return;   // navigated away or source switched
           const res = await translateLocal(batch.map(u => u.text));
           if (!res) return;
           batch.forEach((u, k) => { lines[u.first] = res[k]; });
@@ -589,7 +604,8 @@
     };
     const retryBtn = ['retry', () => { currentVideo = null; init(); }];
     let shown = 0, lastJ = null;
-    const tr = makeLocalTranslator(vid);
+    const owner = Symbol(vid);   // identifies panels built by this run (see makeLocalTranslator)
+    const tr = makeLocalTranslator(owner);
     actions.retranslate = (unit) => tr.setUnit(unit);
     // line-length slider: re-chunks instantly from cached words and rebuilds the panel
     const mkSlider = () => {
@@ -606,7 +622,7 @@
       const en = { translate: j.en?.length ? alignByOverlap(segs, j.en) : null, native: null };
       const meta = `ASR (whisper)${j.done ? '' : ` · ${Math.round((j.progress ?? 0) * 100)}%`}`;
       buildPanel(segs, en, meta, D, actions);
-      const p = document.getElementById('ytz-panel'); p._vid = vid; p._lastStart = segs.at(-1)?.start ?? -1;
+      const p = document.getElementById('ytz-panel'); p._owner = owner; p._lastStart = segs.at(-1)?.start ?? -1;
       shown = segs.length;
       tr.reset(); tr.update(segs, j.done);
     };
@@ -624,8 +640,8 @@
         // word-chunked lines can change retroactively as more words arrive, so only append lines whose start is past everything shown
         const prevEnd = panel?._lastStart ?? -1;
         const fresh = segs.filter(x => x.start > prevEnd);
-        if (panel?._addSegs && panel._vid === vid) { panel._addSegs(fresh, en, meta); panel._lastStart = segs.at(-1)?.start ?? prevEnd; }
-        else { buildPanel(segs, en, meta, D, actions); const p = document.getElementById('ytz-panel'); p._vid = vid; p._lastStart = segs.at(-1)?.start ?? -1; }
+        if (panel?._addSegs && panel._owner === owner) { panel._addSegs(fresh, en, meta); panel._lastStart = segs.at(-1)?.start ?? prevEnd; }
+        else { buildPanel(segs, en, meta, D, actions); const p = document.getElementById('ytz-panel'); p._owner = owner; p._lastStart = segs.at(-1)?.start ?? -1; }
         shown = segs.length;
         tr.update(segs, j.done);
       } else if (!segs.length) {
@@ -695,10 +711,11 @@
       const en = { native: enN.length ? alignByOverlap(zhSegs, enN) : null,
                    translate: enT.length ? alignByOverlap(zhSegs, enT) : null };
       // the local translator only runs when YouTube gave us no English at all
-      const tr = (!en.native && !en.translate) ? makeLocalTranslator(vid) : null;
+      const owner = Symbol(vid);
+      const tr = (!en.native && !en.translate) ? makeLocalTranslator(owner) : null;
       if (tr) actions.retranslate = (unit) => tr.setUnit(unit);
       buildPanel(zhSegs, en, `${trackName(zh)}${zh.kind === 'asr' ? ' (auto)' : ''}${fromCache ? ' ·cached' : ''}`, D, actions);
-      document.getElementById('ytz-panel')._vid = vid;
+      document.getElementById('ytz-panel')._owner = owner;
       if (tr) tr.update(zhSegs);
     } catch (e) { console.error('[yt-zhuyin]', e); showStatus('Failed: ' + e.message, [retryBtn, whisperBtn]); }
   }

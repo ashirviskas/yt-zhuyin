@@ -9,3 +9,8 @@
     return (h ? `${h}:${String(m).padStart(2, '0')}` : m) + ':' + String(s).padStart(2, '0'); };
   const trackName = (t) => t.name?.simpleText ?? t.name?.runs?.map(r => r.text).join('') ?? t.languageCode;
 
+  // Display width in "Chinese cells": a CJK character with its zhuyin column is 1; a latin letter,
+  // digit or space is about a third of that. Line-length limits are expressed in these units.
+  const CJK = /[\u3400-\u9fff\uf900-\ufaff\u3000-\u303f\uff00-\uffef]/;
+  const charWidth = (ch) => CJK.test(ch) ? 1 : 1 / 3;
+  const textWidth = (text) => { let w = 0; for (const ch of text) w += charWidth(ch); return w; };
