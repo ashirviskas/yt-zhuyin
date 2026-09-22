@@ -87,12 +87,11 @@
       src.onchange = e => actions.setSource(e.target.value);
       head.append(title, src);
     } else head.append(title);
-    const unitSel = document.createElement('select'); unitSel.id = 'ytz-enunit';
-    unitSel.title = 'local MT: whole sentences read better, line by line lines up with the Chinese';
-    for (const [v, l] of [['sentence', 'by sentence'], ['line', 'line by line']]) {
-      const o = document.createElement('option'); o.value = v; o.textContent = l; o.selected = v === CFG.translateUnit; unitSel.appendChild(o); }
+    // local MT only: unchecked = whole sentences (read better), checked = line by line (lines up with the Chinese)
+    const byLine = mkToggle('ytz-enunit', 'by line', CFG.translateUnit === 'line');
+    byLine.title = 'local MT: translate each caption line on its own instead of grouping into sentences';
     head.append(mkToggle('ytz-top', 'zhuyin on top', CFG.zhuyinLayout === 'top'), mkToggle('ytz-py', 'pinyin', CFG.showPinyin), mkToggle('ytz-en', 'English', CFG.showEnglish), enSel,
-      ...(actions.retranslate ? [unitSel] : []), mkToggle('ytz-follow', 'follow', CFG.follow),
+      ...(actions.retranslate ? [byLine] : []), mkToggle('ytz-follow', 'follow', CFG.follow),
       mkBtn('↻', 'Refetch this video\'s transcript', actions.reload), mkBtn('✕ cache', 'Clear all cached transcripts and refetch', actions.clearAll), ...(actions.extra ?? []));
     panel.appendChild(head);
 
@@ -145,7 +144,7 @@
     head.querySelector('#ytz-en').onchange = e => panel.classList.toggle('ytz-noen', !e.target.checked);
     head.querySelector('#ytz-follow').onchange = e => { CFG.follow = e.target.checked; };
     head.querySelector('#ytz-enmode').onchange = e => applyEn(e.target.value);
-    if (actions.retranslate) head.querySelector('#ytz-enunit').onchange = e => actions.retranslate(e.target.value);
+    if (actions.retranslate) head.querySelector('#ytz-enunit').onchange = e => actions.retranslate(e.target.checked ? 'line' : 'sentence');
 
     (document.querySelector('#secondary-inner') || document.querySelector('#secondary')).prepend(panel);
 

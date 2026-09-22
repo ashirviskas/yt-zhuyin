@@ -167,7 +167,7 @@ When YouTube offers neither an English track nor an auto-translation, the panel 
 the Chinese lines itself (`CFG.localTranslate`). Lines are grouped into sentences first, translated in
 batches, and cached in IndexedDB in the browser as well as on the server, so a video you revisit is instant.
 A sentence that spans several caption lines gets its English under the first line, with a bracket down the
-group's left edge so you can see which lines it covers. The **by sentence / line by line** dropdown in the
+group's left edge so you can see which lines it covers. The **by line** checkbox in the
 panel header switches to translating every line on its own instead — worse English, but it lines up 1:1
 with the Chinese. Set `CFG.localTranslate` to `false` to keep the panel Chinese-only.
 
