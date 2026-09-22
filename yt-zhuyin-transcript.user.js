@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube 注音 transcript (zh-TW + zhuyin, pinyin optional, English)
 // @namespace    local.yt-zhuyin
-// @version      0.6.1
+// @version      0.6.2
 // @description  Side panel: traditional Chinese captions segmented into words with zhuyin from a Taiwan (McBopomofo) dictionary, optional pinyin derived from the zhuyin, English line, click-to-seek.
 // @match        https://www.youtube.com/*
 // @homepageURL  https://github.com/ashirviskas/yt-zhuyin

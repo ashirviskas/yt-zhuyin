@@ -2,8 +2,6 @@
 
 import sys
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, TypedDict
@@ -59,29 +57,6 @@ class Config:
     def mkdirs(self) -> None:
         self.cache.mkdir(parents=True, exist_ok=True)
         self.audio.mkdir(exist_ok=True)
-
-
-@contextmanager
-def hub_offline() -> "Iterator[None]":
-    """Block huggingface_hub from touching the network inside this block.
-
-    Cached weights still load; a model that isn't cached raises, and the caller
-    retries online. Without this, every load pings the Hub and warns about
-    unauthenticated requests even though nothing needs downloading.
-    """
-    import os
-
-    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
-    previous = os.environ.get("HF_HUB_OFFLINE")
-    os.environ["HF_HUB_OFFLINE"] = "1"
-    try:
-        yield
-    except BaseException:
-        if previous is None:
-            _ = os.environ.pop("HF_HUB_OFFLINE", None)
-        else:
-            os.environ["HF_HUB_OFFLINE"] = previous
-        raise
 
 
 def release_memory() -> None:

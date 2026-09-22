@@ -10,7 +10,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import Config, Json, Segment, hub_offline, log, release_memory
+from . import Config, Json, Segment, log, release_memory
 from .jobs import JobStore
 
 if TYPE_CHECKING:
@@ -48,9 +48,8 @@ def load_model(cfg: Config) -> None:
             "num_workers": max(1, cfg.workers),
         }
         try:
-            # already downloaded: skip the Hub round-trip entirely
-            with hub_offline():
-                _model = WhisperModel(cfg.model, local_files_only=True, **opts)
+            # already downloaded: local_files_only skips the Hub round-trip entirely
+            _model = WhisperModel(cfg.model, local_files_only=True, **opts)
         except (OSError, ValueError):
             log("not in the local cache, fetching from the Hub (once)…")
             _model = WhisperModel(cfg.model, **opts)

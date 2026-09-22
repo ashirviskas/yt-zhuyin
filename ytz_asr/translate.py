@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from . import Config, Json, hub_offline, log, release_memory
+from . import Config, Json, log, release_memory
 
 if TYPE_CHECKING:
     from opencc import OpenCC
@@ -44,11 +44,11 @@ def load(cfg: Config) -> "tuple[MarianTokenizer, MarianMTModel] | None":
         log(f"loading MT '{cfg.mt}'…")
         transformers.utils.logging.disable_progress_bar()   # local weight loading needs no bar
         try:
-            # already downloaded: skip the Hub round-trip (and its rate-limit warning)
-            with hub_offline():
-                tok = MarianTokenizer.from_pretrained(cfg.mt, local_files_only=True)
-                mdl = MarianMTModel.from_pretrained(cfg.mt, local_files_only=True).eval()
-        except OSError:
+            # already downloaded: local_files_only skips the Hub round-trip entirely
+            tok = MarianTokenizer.from_pretrained(cfg.mt, local_files_only=True)
+            mdl = MarianMTModel.from_pretrained(cfg.mt, local_files_only=True).eval()
+        except Exception:
+            # transformers 5 raises TypeError (not OSError) when the tokenizer's spm files are missing
             log("not in the local cache, fetching from the Hub (once)…")
             tok = MarianTokenizer.from_pretrained(cfg.mt)
             mdl = MarianMTModel.from_pretrained(cfg.mt).eval()
