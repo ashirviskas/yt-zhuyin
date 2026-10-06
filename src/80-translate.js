@@ -2,8 +2,8 @@
   // Returns null if the server is unavailable.
   async function translateLocal(texts) {
     if (!CFG.asrServer || !CFG.localTranslate || !texts.length) return null;
-    const known = await mtGetMany(texts);
-    const miss = [...new Set(texts.filter(t => !(t in known)))];
+    const known = await mtGetMany(texts);   // Map: zh -> en
+    const miss = [...new Set(texts.filter(t => !known.has(t)))];
     if (miss.length) {
       try {
         const r = await fetch(`${CFG.asrServer}/translate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lines: miss }) });
@@ -11,11 +11,11 @@
         const j = await r.json();
         if (!Array.isArray(j.lines)) return null;
         const pairs = miss.map((z, k) => [z, j.lines[k] ?? '']);
-        pairs.forEach(([z, e]) => { known[z] = e; });
-        mtPutMany(pairs);
+        pairs.forEach(([z, e]) => known.set(z, e));
+        mtPutMany(pairs.filter(([, e]) => e));   // don't memorise an empty answer
       } catch (e) { log('local translate failed', e); return null; }
     }
-    return texts.map(t => known[t] ?? '');
+    return texts.map(t => known.get(t) ?? '');
   }
 
   // Group consecutive lines into sentences: end at sentence punctuation, a long pause, or a length cap.

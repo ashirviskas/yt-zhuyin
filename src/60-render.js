@@ -30,11 +30,75 @@
   .ytz-en{font-size:14px;margin-top:4px;opacity:.9;font-family:Roboto,sans-serif}
   #ytz-panel.ytz-nopy .ytz-py{display:none}
   #ytz-panel.ytz-noen .ytz-en{display:none}
+  #ytz-panel.ytz-below{margin:12px 0}
+  #ytz-panel.ytz-overlay{position:fixed;z-index:2147483647;display:flex;flex-direction:column;margin:0;min-width:280px;min-height:120px;resize:both;color:#f1f1f1;background:rgba(15,15,15,var(--ytz-alpha,.8));backdrop-filter:blur(6px);box-shadow:0 4px 24px rgba(0,0,0,.5)}
+  #ytz-panel.ytz-overlay #ytz-head{cursor:move;touch-action:none;user-select:none}
+  #ytz-panel.ytz-overlay #ytz-body{max-height:none;flex:1;min-height:0}
+  #ytz-panel.ytz-overlay .ytz-ts,#ytz-panel.ytz-overlay .ytz-zy,#ytz-panel.ytz-overlay .ytz-py,#ytz-panel.ytz-overlay #ytz-status{color:#bbb}
+  #ytz-panel.ytz-overlay .ytz-zy.ytz-poly{color:#e0b040}
+  #ytz-panel.ytz-overlay .ytz-row:hover,#ytz-panel.ytz-overlay .ytz-row.ytz-active,#ytz-panel.ytz-overlay #ytz-head button:hover{background:rgba(255,255,255,.1)}
+  #ytz-alpha{display:none}
+  #ytz-panel.ytz-overlay #ytz-alpha{display:flex}
   `;
   function injectCss() {
     if (document.getElementById('ytz-css')) return;
     const s = document.createElement('style'); s.id = 'ytz-css'; s.textContent = CSS; document.head.appendChild(s);
   }
+
+  // ---------------------------------------------------------------- placement
+  // 'side': top of the recommendations column (YouTube's own transcript lives there too)
+  // 'below': under the video, full primary width — wide and readable, especially in theater mode
+  // 'overlay': floating box, dragged by its header, resized from the corner, translucent; follows the player into fullscreen
+  const UI_KEY = 'ytz-ui';
+  const ui = Object.assign({ mode: CFG.panelMode, x: 24, y: 80, w: 560, h: 360, alpha: 0.8 },
+    (() => { try { return JSON.parse(localStorage.getItem(UI_KEY)) ?? {}; } catch { return {}; } })());
+  const saveUi = () => { try { localStorage.setItem(UI_KEY, JSON.stringify(ui)); } catch {} };
+  function mountPanel(panel) {
+    panel.classList.remove('ytz-below', 'ytz-overlay');
+    panel.style.cssText = '';
+    if (ui.mode === 'overlay') {
+      panel.classList.add('ytz-overlay');
+      ui.x = Math.max(0, Math.min(ui.x, innerWidth - 120)); ui.y = Math.max(0, Math.min(ui.y, innerHeight - 60));   // never off screen
+      Object.assign(panel.style, { left: ui.x + 'px', top: ui.y + 'px', width: ui.w + 'px', height: ui.h + 'px' });
+      panel.style.setProperty('--ytz-alpha', ui.alpha);
+      const fs = document.fullscreenElement;
+      (fs && fs !== document.documentElement && fs !== document.body ? fs : document.body).appendChild(panel);
+      return;
+    }
+    const host = (ui.mode === 'below' && document.querySelector('#primary-inner #below, #primary #below, #primary-inner'))
+      || document.querySelector('#secondary-inner') || document.querySelector('#secondary');
+    if (ui.mode === 'below') panel.classList.add('ytz-below');
+    host?.prepend(panel);
+  }
+  function makeOverlayControls(panel, head) {
+    // placement selector + opacity slider (slider only shows in overlay mode)
+    const sel = document.createElement('select'); sel.title = 'where the panel lives';
+    for (const [v, l] of [['side', 'side'], ['below', 'below video'], ['overlay', 'overlay']]) { const o = document.createElement('option'); o.value = v; o.textContent = l; o.selected = v === ui.mode; sel.appendChild(o); }
+    sel.onchange = () => { ui.mode = sel.value; saveUi(); mountPanel(panel); };
+    const al = document.createElement('label'); al.id = 'ytz-alpha'; al.title = 'overlay opacity';
+    const ar = document.createElement('input'); ar.type = 'range'; ar.min = 0.2; ar.max = 1; ar.step = 0.05; ar.value = ui.alpha;
+    ar.oninput = () => { ui.alpha = +ar.value; panel.style.setProperty('--ytz-alpha', ui.alpha); saveUi(); };
+    al.append(document.createTextNode('α'), ar);
+    // drag by the header (not by its controls)
+    head.addEventListener('pointerdown', e => {
+      if (!panel.classList.contains('ytz-overlay') || e.button !== 0 || e.target.closest('input,select,button,label')) return;
+      const r = panel.getBoundingClientRect(), dx = e.clientX - r.left, dy = e.clientY - r.top;
+      const move = ev => { ui.x = Math.max(0, Math.min(innerWidth - 120, ev.clientX - dx)); ui.y = Math.max(0, Math.min(innerHeight - 60, ev.clientY - dy));
+        panel.style.left = ui.x + 'px'; panel.style.top = ui.y + 'px'; };
+      const up = () => { head.removeEventListener('pointermove', move); head.removeEventListener('pointerup', up); head.removeEventListener('pointercancel', up); saveUi(); };
+      head.setPointerCapture(e.pointerId); head.addEventListener('pointermove', move); head.addEventListener('pointerup', up); head.addEventListener('pointercancel', up);
+      e.preventDefault();
+    });
+    // remember the size after a corner resize
+    let tm; const ro = new ResizeObserver(() => { if (!panel.classList.contains('ytz-overlay')) return; clearTimeout(tm);
+      tm = setTimeout(() => { ui.w = Math.round(panel.offsetWidth); ui.h = Math.round(panel.offsetHeight); saveUi(); }, 300); });
+    ro.observe(panel);
+    // inside the fullscreen player, don't let clicks/keys in the panel reach the player (play/pause, shortcuts)
+    for (const ev of ['click', 'dblclick', 'mousedown', 'mouseup', 'keydown', 'keyup', 'keypress', 'contextmenu']) panel.addEventListener(ev, e => e.stopPropagation());
+    return [sel, al];
+  }
+  // the overlay has to be re-parented into the fullscreen element to stay visible; YouTube swaps that element on every toggle
+  document.addEventListener('fullscreenchange', () => { const p = document.getElementById('ytz-panel'); if (p && ui.mode === 'overlay') mountPanel(p); });
 
   function renderZh(text, D) {
     const wrap = document.createElement('div'); wrap.className = 'ytz-zh';
@@ -92,7 +156,8 @@
     byLine.title = 'local MT: translate each caption line on its own instead of grouping into sentences';
     head.append(mkToggle('ytz-top', 'zhuyin on top', CFG.zhuyinLayout === 'top'), mkToggle('ytz-py', 'pinyin', CFG.showPinyin), mkToggle('ytz-en', 'English', CFG.showEnglish), enSel,
       ...(actions.retranslate ? [byLine] : []), mkToggle('ytz-follow', 'follow', CFG.follow),
-      mkBtn('↻', 'Refetch this video\'s transcript', actions.reload), mkBtn('✕ cache', 'Clear all cached transcripts and refetch', actions.clearAll), ...(actions.extra ?? []));
+      mkBtn('↻', 'Refetch this video\'s transcript', actions.reload), mkBtn('✕ cache', 'Clear all cached transcripts and refetch', actions.clearAll), ...(actions.extra ?? []),
+      ...makeOverlayControls(panel, head));
     panel.appendChild(head);
 
     const body = document.createElement('div'); body.id = 'ytz-body';
@@ -146,7 +211,7 @@
     head.querySelector('#ytz-enmode').onchange = e => applyEn(e.target.value);
     if (actions.retranslate) head.querySelector('#ytz-enunit').onchange = e => actions.retranslate(e.target.checked ? 'line' : 'sentence');
 
-    (document.querySelector('#secondary-inner') || document.querySelector('#secondary')).prepend(panel);
+    mountPanel(panel);
 
     // Poll the player instead of binding to the <video> element: YouTube swaps the element on
     // quality/format changes, which silently orphans any timeupdate listener.
@@ -177,11 +242,12 @@
     // and a later source switch would append lines into a body that is no longer in the page
     const old = document.getElementById('ytz-panel'); old?._cleanup?.(); old?.remove();
     const panel = document.createElement('div'); panel.id = 'ytz-panel';
-    (document.querySelector('#secondary-inner') || document.querySelector('#secondary'))?.prepend(panel);
+    mountPanel(panel);
     const d = document.createElement('div'); d.id = 'ytz-status'; d.textContent = msg;
     if (buttons.length) {
       const row = document.createElement('div'); row.id = 'ytz-head'; row.style.borderTop = '1px solid var(--yt-spec-10-percent-layer,#333)'; row.style.borderBottom = 'none';
       for (const [label, fn] of buttons) { const b = document.createElement('button'); b.textContent = label; b.onclick = fn; row.appendChild(b); }
+      row.append(...makeOverlayControls(panel, row));
       panel.append(d, row);
     } else panel.appendChild(d);
   }

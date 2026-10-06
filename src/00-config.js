@@ -7,6 +7,7 @@
     wordGap: true,              // visible gap between dictionary words
     restoreCaptions: true,      // put player captions back to whatever they were after harvesting
     panelMaxHeight: '60vh',
+    panelMode: 'side',          // 'side' (recommendations column) | 'below' (under the video) | 'overlay' (floating, draggable); the header selector remembers your choice
     zhuyinLayout: 'side',       // 'side' (textbook: vertical column right of the character) | 'top' (horizontal, above)
     hanFontSize: '30px',
     zhuyinFontSize: '14px',     // side layout: ~half the character height is the readable minimum on a 96-dpi screen

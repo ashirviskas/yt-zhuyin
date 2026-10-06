@@ -12,6 +12,7 @@ A Firefox userscript that adds a side panel to YouTube watch pages showing the v
 - Optional pinyin line, derived from the zhuyin.
 - English line under each segment: the channel's own English track if there is one, otherwise YouTube's auto-translation. A dropdown switches between the two.
 - Click a line to seek. The current line is highlighted and the panel follows playback.
+- The panel can live in the sidebar, under the video (wide, good in theater mode), or as a floating translucent overlay you drag and resize; the overlay stays on top in fullscreen. Pick from the dropdown in the panel header; the choice is remembered.
 - No Chinese track, or a badly segmented auto one? Point the panel at a local Whisper server (`asr_server.py`) and it transcribes the audio on your own CPU, re-chunks it into readable lines, and can translate them too.
 - Characters shown in amber are polyphonic and were read on their own, without a dictionary word to settle the reading. Hover to see the alternatives.
 
