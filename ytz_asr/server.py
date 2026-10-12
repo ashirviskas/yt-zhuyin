@@ -136,6 +136,7 @@ def snapshot() -> Json:
 
 @app.get("/transcript/{vid}")
 def get_transcript(vid: Vid) -> Json:
+    _ = titles.get(_cfg, vid)  # start the lookup now, so the dashboard has it by the time it looks
     return _jobs.request(vid)
 
 
@@ -149,6 +150,7 @@ def delete_transcript(vid: Vid, audio: int = Query(0)) -> JSONResponse:
 def post_start(vid: Vid, force: int = Query(0)) -> JSONResponse:
     """Start or resume. force=1 (the dashboard) keeps it running without a polling tab."""
     _jobs.start(vid, force=force == 1)
+    _ = titles.get(_cfg, vid)
     return JSONResponse({"started": vid}, headers=_REFRESH)
 
 
@@ -174,6 +176,7 @@ async def post_jobs(request: Request) -> HTMLResponse:
         return HTMLResponse('<span class="err">not a video id or YouTube URL</span>')
     vid = m.group(1) or m.group(2)
     _jobs.start(vid, force=True)
+    _ = titles.get(_cfg, vid)
     return HTMLResponse(f'<span class="ok">queued {vid}</span>', headers=_REFRESH)
 
 

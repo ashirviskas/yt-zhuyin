@@ -14,6 +14,7 @@
     zyTop: 'M6 4h12M5 9h14a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V10a1 1 0 0 1 1-1z',   // reading above the character
     byLine: 'M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01',
     width: 'M3 12h18M7 8l-4 4 4 4M17 8l4 4-4 4',
+    autoHide: 'M5 4h14M18 15l-6-6-6 6M12 9v11',                            // toolbar tucks away upwards
     alpha: 'M12 2.7 6.3 8.4a8 8 0 1 0 11.4 0z',
     side: FRAME + 'M15 3v18',
     below: FRAME + 'M3 15h18',

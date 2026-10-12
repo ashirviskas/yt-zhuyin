@@ -144,7 +144,7 @@ def cards(data: Json) -> str:
         _card("memory", f"{rss:.0f} MB",
               f'peak {mem["peak_rss_mb"] or 0:.0f} MB of {total / 1024:.1f} GB'
               + _bar(rss / total if total else 0, "mem")),
-        _card("translation", _esc(mt["name"] or "disabled"), _loaded_note(mt, f'{mt["cache_entries"]} cached')),
+        _card("translation", _esc((mt["name"] or "disabled").rsplit("/", 1)[-1]), _loaded_note(mt, f'{mt["cache_entries"]} cached')),
         _card("audio cache", f'{cache["audio_mb"]:.0f} MB',
               f'{cache["audio_files"]} files of {cache["audio_limit_mb"]} MB limit'
               + _bar(cache["audio_mb"] / cache["audio_limit_mb"] if cache["audio_limit_mb"] else 0, "disk")),
@@ -159,6 +159,8 @@ def _loaded_note(info: Json, extra: str) -> str:
         return "disabled"
     if not info["loaded"]:
         return f"not loaded · {extra}"
+    if info.get("inflight") or info.get("busy"):
+        return f"in use · {extra}"
     idle, after = info.get("idle_sec"), info.get("unload_after_sec")
     if after and idle is not None:
         return f"loaded · unloads in {_dur(max(0.0, after - idle))} · {extra}"

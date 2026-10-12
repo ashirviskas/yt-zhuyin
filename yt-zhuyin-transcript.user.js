@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube 注音 transcript (zh-TW + zhuyin, pinyin optional, English)
 // @namespace    local.yt-zhuyin
-// @version      0.8.1
+// @version      0.8.2
 // @description  Side panel: traditional Chinese captions segmented into words with zhuyin from a Taiwan (McBopomofo) dictionary, optional pinyin derived from the zhuyin, English line, click-to-seek.
 // @match        https://www.youtube.com/*
 // @homepageURL  https://github.com/ashirviskas/yt-zhuyin
@@ -32,6 +32,8 @@
     showPinyin: false,
     showEnglish: true,
     follow: true,
+    autoHideHead: true,         // slide the panel toolbar away after autoHideMs without mouse movement; hover brings it back
+    autoHideMs: 3000,
     wordGap: true,              // visible gap between dictionary words
     restoreCaptions: true,      // put player captions back to whatever they were after harvesting
     panelMaxHeight: '60vh',
@@ -49,7 +51,7 @@
     asrPollMs: 4000,
     localTranslate: true,       // ask the local server for a per-line English translation when YouTube has none
     translateBatch: 24,         // sentences per /translate request; smaller = English shows up sooner on long videos
-    translateUnit: 'sentence',  // 'sentence': group lines into sentences before translating (English shown on the first line) | 'line'
+    translateUnit: 'line',      // 'line': each caption line on its own, lines up with the Chinese | 'sentence': group lines into sentences first (English on the first line; reads better)
     sentenceMaxChars: 60,       // sentence grouping: force a break after this many Chinese cells (a latin letter counts 1/3)
     sentenceGapSec: 1.5,        // sentence grouping: a pause longer than this ends a sentence
     mtCacheMax: 20000,          // translated lines kept in IndexedDB (oldest evicted)         // lines per /translate request; smaller = English shows up sooner on long videos
@@ -145,6 +147,7 @@
     zyTop: 'M6 4h12M5 9h14a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V10a1 1 0 0 1 1-1z',   // reading above the character
     byLine: 'M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01',
     width: 'M3 12h18M7 8l-4 4 4 4M17 8l4 4-4 4',
+    autoHide: 'M5 4h14M18 15l-6-6-6 6M12 9v11',                            // toolbar tucks away upwards
     alpha: 'M12 2.7 6.3 8.4a8 8 0 1 0 11.4 0z',
     side: FRAME + 'M15 3v18',
     below: FRAME + 'M3 15h18',
@@ -351,7 +354,7 @@
   .ytz-cc{display:inline-flex;align-items:center;margin-right:3px}
   .ytz-han{font-size:${CFG.hanFontSize};line-height:1}
   .ytz-zy{writing-mode:vertical-lr;text-orientation:upright;font-size:${CFG.zhuyinFontSize};line-height:1;margin-left:2px;color:var(--yt-spec-text-secondary,#aaa);white-space:nowrap;font-family:"Noto Sans TC","PingFang TC","BopomofoRuby","Microsoft JhengHei",sans-serif}
-  #ytz-panel.ytz-top .ytz-cc{flex-direction:column;align-items:center;margin-right:6px}
+  #ytz-panel.ytz-top .ytz-cc{flex-direction:column-reverse;align-items:center;margin-right:6px}
   #ytz-panel.ytz-top .ytz-zy{writing-mode:horizontal-tb;text-orientation:mixed;font-size:${CFG.zhuyinTopFontSize};margin:0 0 2px 0;letter-spacing:.5px}
   .ytz-zy.ytz-poly{color:#e0b040}
   .ytz-zy.ytz-missing{color:#ff5555}
@@ -372,6 +375,12 @@
   #ytz-panel.ytz-overlay .ytz-zy.ytz-poly{color:#e0b040}
   #ytz-panel.ytz-overlay .ytz-row:hover,#ytz-panel.ytz-overlay .ytz-row.ytz-active,#ytz-panel.ytz-overlay #ytz-head button:hover{background:rgba(255,255,255,.1)}
   #ytz-panel:not(.ytz-overlay) .ytz-alpha-g{display:none}
+  /* auto-hide: the toolbar floats over the top lines and slides up out of the panel when idle */
+  #ytz-panel.ytz-autohide:not(.ytz-overlay){position:relative}
+  #ytz-panel.ytz-autohide #ytz-head{position:absolute;top:0;left:0;right:0;z-index:2;background:var(--ytz-head-bg,var(--yt-spec-base-background,#0f0f0f));box-shadow:0 4px 16px rgba(0,0,0,.6);backdrop-filter:blur(14px) brightness(.6);transition:transform .25s ease,opacity .25s ease}
+  #ytz-panel.ytz-autohide.ytz-idle #ytz-head{transform:translateY(-100%);opacity:0;pointer-events:none}
+  #ytz-panel.ytz-below{--ytz-head-bg:var(--yt-spec-raised-background,#212121)}
+  #ytz-panel.ytz-overlay{--ytz-head-bg:rgba(8,8,8,.93)}   /* dark enough on its own; the blur on top turns any line underneath to smudge */
   `;
   function injectCss() {
     if (document.getElementById('ytz-css')) return;
@@ -387,7 +396,7 @@
     (() => { try { return JSON.parse(localStorage.getItem(UI_KEY)) ?? {}; } catch { return {}; } })());
   const saveUi = () => { try { localStorage.setItem(UI_KEY, JSON.stringify(ui)); } catch {} };
   // display toggles live in the same localStorage entry; CFG holds the defaults until the first change
-  const PREFS = ['zhuyinLayout', 'showPinyin', 'showEnglish', 'follow', 'translateUnit', 'asrMaxChars'];
+  const PREFS = ['zhuyinLayout', 'showPinyin', 'showEnglish', 'follow', 'translateUnit', 'asrMaxChars', 'autoHideHead'];
   for (const k of PREFS) if (k in ui) CFG[k] = ui[k];
   const setPref = (k, v) => { CFG[k] = v; ui[k] = v; saveUi(); };
   function mountPanel(panel) {
@@ -530,12 +539,22 @@
         actions.retranslate && toggleBtn('byLine', 'Local MT: translate line by line instead of whole sentences', CFG.translateUnit === 'line', v => actions.retranslate(v ? 'line' : 'sentence')),
       ),
       group(toggleBtn('follow', 'Follow playback', CFG.follow, v => setPref('follow', v)), ...(actions.extra ?? [])),
+      group(toggleBtn('autoHide', 'Auto-hide this toolbar when the mouse is idle', CFG.autoHideHead, v => { setPref('autoHideHead', v); panel.classList.toggle('ytz-autohide', v); wake(); })),
       group(...(actions.asr ?? []),
         iconBtn('refresh', 'Refetch this video\'s transcript', actions.reload),
         Object.assign(iconBtn('trash', 'Clear all cached transcripts and translations, then refetch', actions.clearAll), { className: 'ytz-ib ytz-danger' })),
       ...makeOverlayControls(panel, head));
     head.append(tools);
     panel.appendChild(head);
+    // Auto-hide: any mouse movement over the panel shows the toolbar; it tucks away after autoHideMs of
+    // stillness, but never from under the pointer or while one of its dropdowns has focus.
+    panel.classList.toggle('ytz-autohide', CFG.autoHideHead);
+    let idleTm;
+    const tuck = () => { if (head.matches(':hover, :focus-within')) idleTm = setTimeout(tuck, CFG.autoHideMs); else panel.classList.add('ytz-idle'); };
+    const wake = () => { panel.classList.remove('ytz-idle'); clearTimeout(idleTm); idleTm = setTimeout(tuck, CFG.autoHideMs); };
+    panel.addEventListener('pointermove', wake);
+    panel.addEventListener('pointerleave', () => { clearTimeout(idleTm); idleTm = setTimeout(tuck, 800); });
+    wake();
 
     const body = document.createElement('div'); body.id = 'ytz-body';
     const rows = [], enEls = [];
@@ -605,7 +624,7 @@
     };
     const timer = setInterval(tick, CFG.pollMs);
     tick();
-    panel._cleanup = () => clearInterval(timer);
+    panel._cleanup = () => { clearInterval(timer); clearTimeout(idleTm); };
   }
 
   function showStatus(msg, buttons = []) {

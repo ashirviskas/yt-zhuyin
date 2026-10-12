@@ -2,7 +2,13 @@
 
 A Firefox userscript that adds a side panel to YouTube watch pages showing the video's traditional Chinese captions with 注音 (zhuyin / bopomofo) next to every character, plus an aligned English line. Built for learning Taiwanese Mandarin from real videos.
 
-![panel screenshot](screenshot.png)
+<p align="center">
+  <img src="docs/img/panel.png" width="440" alt="Side panel: whisper transcript with zhuyin beside each character, line-by-line English, the playing line marked in red">
+</p>
+
+![Overlay mode: a wide translucent band over the video in theater mode, toolbar tucked away](docs/img/overlay.jpg)
+
+<sub>Shown: a 公視新聞 clip transcribed by the local Whisper server (`small`), translated line by line with opus-mt. Machine transcription and translation, mistakes included.</sub>
 
 ## What it does
 
@@ -12,7 +18,8 @@ A Firefox userscript that adds a side panel to YouTube watch pages showing the v
 - Optional pinyin line, derived from the zhuyin.
 - English line under each segment: the channel's own English track if there is one, otherwise YouTube's auto-translation. A dropdown switches between the two.
 - Click a line to seek. The current line is highlighted and the panel follows playback.
-- The panel can live in the sidebar, under the video (wide, good in theater mode), or as a floating translucent overlay you drag and resize; the overlay stays on top in fullscreen. Pick from the dropdown in the panel header; the choice is remembered.
+- The panel can live in the sidebar, under the video, or as a floating translucent overlay you drag and resize; the overlay stays on top in fullscreen. Under the video, the panel takes exactly the space left below the player and YouTube's header slides away (hover the top edge to get it back), so you never scroll the video out of view.
+- One icon toolbar: zhuyin above/beside, pinyin, English, line-by-line translation, follow playback, line length, refetch, clear cache, placement, overlay opacity. Every choice is remembered across page loads. With auto-hide on (the default), the toolbar slides up out of the way after three seconds without mouse movement and slides back when you move the mouse over the panel.
 - No Chinese track, or a badly segmented auto one? Point the panel at a local Whisper server (`asr_server.py`) and it transcribes the audio on your own CPU, re-chunks it into readable lines, and can translate them too.
 - Characters shown in amber are polyphonic and were read on their own, without a dictionary word to settle the reading. Hover to see the alternatives.
 
@@ -86,6 +93,8 @@ memory and cache meters, and two history charts — memory over the last ten min
 what was running when (transcribing, downloading, queued, translating). Hover either chart and both show a
 crosshair at that instant with the memory and the running counts, Grafana-style.
 
+![Dashboard: model and memory cards, memory and activity charts with the hover crosshair, a queue of jobs](docs/img/dashboard.png)
+
 The dashboard can also act. Paste a YouTube URL or video id into the box at the top to transcribe it without
 a tab open (the job then ignores the lease). Every job and every video in the **Library** — finished
 transcripts, partial ones, and audio that was downloaded but never transcribed — has icon buttons to preview,
@@ -99,6 +108,8 @@ newest line in view while a job is still transcribing and tracks the playing lin
 the translate icon shows English under each line, filling in a few lines per refresh so a poll never stalls.
 Click any line to seek the audio to it. The preview sits outside the refreshing regions, so audio keeps
 playing while the stats update.
+
+![Transcript preview: player, follow and English toggles, lines with their translation, the playing line highlighted](docs/img/preview.png)
 
 The same numbers as JSON: `GET /status` reports everything the server is doing — every job with its progress, throughput and ETA, plus
 memory, queue, model state and cache sizes. Add `?pretty=1` to read it in a browser tab.
@@ -179,12 +190,12 @@ The first start sits in "loading" for a minute or two while the model downloads.
 ### Local English
 
 When YouTube offers neither an English track nor an auto-translation, the panel asks the server to translate
-the Chinese lines itself (`CFG.localTranslate`). Lines are grouped into sentences first, translated in
-batches, and cached in IndexedDB in the browser as well as on the server, so a video you revisit is instant.
-A sentence that spans several caption lines gets its English under the first line, with a bracket down the
-group's left edge so you can see which lines it covers. The **by line** checkbox in the
-panel header switches to translating every line on its own instead — worse English, but it lines up 1:1
-with the Chinese. Set `CFG.localTranslate` to `false` to keep the panel Chinese-only.
+the Chinese lines itself (`CFG.localTranslate`). By default every line is translated on its own, so the English
+lines up 1:1 with the Chinese. Short fragments translate worse that way, sometimes badly. Turn off the
+line-by-line toggle (the list icon) to group lines into sentences first: the English then goes under the
+first line of each sentence, with a bracket down the group's left edge showing which lines it covers.
+Either way it is translated in batches and cached in IndexedDB in the browser as well as on the server, so a
+video you revisit is instant. Set `CFG.localTranslate` to `false` to keep the panel Chinese-only.
 
 ## Settings
 
@@ -200,8 +211,10 @@ Open the script in your userscript manager and edit the `CFG` block at the top (
 | `wordGap` | `true` | dotted underline and spacing between dictionary words |
 | `asrServer` | `'http://127.0.0.1:8765'` | local Whisper server; `null` disables the fallback entirely |
 | `localTranslate` | `true` | ask that server for English when YouTube has none |
+| `translateUnit` | `'line'` | local English per caption line; `'sentence'` groups lines into sentences first |
+| `autoHideHead` / `autoHideMs` | `true` / `3000` | tuck the panel toolbar away after this long without mouse movement |
 
-The header toggles (pinyin, English, zhuyin on top, follow) change the current panel only; edit `CFG` to change defaults.
+`CFG` holds the defaults. Toolbar choices (zhuyin layout, pinyin, English, line-by-line, follow, line length, auto-hide, placement) are saved in the browser and win over `CFG` from then on.
 
 ## How it works
 

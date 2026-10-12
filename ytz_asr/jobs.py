@@ -247,6 +247,7 @@ class JobStore:
             job.n_segs, job.n_words = len(segs), len(words)
             job.segs, job.words, job.en = [], [], None
             job.status, job.done, job.progress, job.forced = "ready", True, 1.0, False
+            job.resume_from = max(job.resume_from, job.audio_duration)  # silence at the end, or no speech at all
         return len(segs)
 
     def fail(self, vid: str, message: str) -> None:

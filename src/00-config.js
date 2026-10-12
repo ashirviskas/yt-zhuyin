@@ -4,6 +4,8 @@
     showPinyin: false,
     showEnglish: true,
     follow: true,
+    autoHideHead: true,         // slide the panel toolbar away after autoHideMs without mouse movement; hover brings it back
+    autoHideMs: 3000,
     wordGap: true,              // visible gap between dictionary words
     restoreCaptions: true,      // put player captions back to whatever they were after harvesting
     panelMaxHeight: '60vh',
@@ -21,7 +23,7 @@
     asrPollMs: 4000,
     localTranslate: true,       // ask the local server for a per-line English translation when YouTube has none
     translateBatch: 24,         // sentences per /translate request; smaller = English shows up sooner on long videos
-    translateUnit: 'sentence',  // 'sentence': group lines into sentences before translating (English shown on the first line) | 'line'
+    translateUnit: 'line',      // 'line': each caption line on its own, lines up with the Chinese | 'sentence': group lines into sentences first (English on the first line; reads better)
     sentenceMaxChars: 60,       // sentence grouping: force a break after this many Chinese cells (a latin letter counts 1/3)
     sentenceGapSec: 1.5,        // sentence grouping: a pause longer than this ends a sentence
     mtCacheMax: 20000,          // translated lines kept in IndexedDB (oldest evicted)         // lines per /translate request; smaller = English shows up sooner on long videos
