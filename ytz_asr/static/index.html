@@ -10,20 +10,37 @@
 <body>
 <header>
   <h1>yt-zhuyin<span class="sub">local ASR service</span></h1>
+  <form class="add" hx-post="/jobs" hx-target="#add-msg" hx-swap="innerHTML"
+        hx-on::after-request="if (event.detail.successful) this.reset()">
+    <input name="video" placeholder="YouTube URL or video id" autocomplete="off" required>
+    <button class="primary" type="submit" title="Transcribe without a YouTube tab">
+      <svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+      Transcribe
+    </button>
+    <span id="add-msg" class="addmsg"></span>
+  </form>
   <div class="live"><span class="dot"></span>live</div>
 </header>
 
-<section hx-get="/ui/cards" hx-trigger="load, every 2s" hx-swap="innerHTML"></section>
+<section hx-get="/ui/cards" hx-trigger="load, every 2s, ytz-refresh from:body" hx-swap="innerHTML"></section>
 
-<!-- slower than the rest: a redraw mid-hover is disruptive, and samples land every 2s anyway -->
-<section id="charts" hx-get="/ui/charts" hx-trigger="load, every 5s" hx-swap="innerHTML"></section>
-
-<section hx-get="/ui/jobs" hx-trigger="load, every 2s" hx-swap="innerHTML">
+<section hx-get="/ui/jobs" hx-trigger="load, every 2s, ytz-refresh from:body" hx-swap="innerHTML">
   <p class="muted">connecting…</p>
 </section>
 
 <!-- outside every polling region, so a playing track is never swapped away -->
 <section id="detail"></section>
+
+<section hx-get="/ui/library" hx-trigger="load, every 5s, ytz-refresh from:body" hx-swap="innerHTML"></section>
+
+<!-- slower than the rest: a redraw mid-hover is disruptive, and samples land every 2s anyway -->
+<section id="charts" hx-get="/ui/charts" hx-trigger="load, every 5s" hx-swap="innerHTML"></section>
+
+<!-- loaded once: polling would wipe what is being typed -->
+<details class="panel">
+  <summary><h2>Settings</h2></summary>
+  <div hx-get="/ui/settings" hx-trigger="load" hx-swap="outerHTML"></div>
+</details>
 <script src="/static/dashboard.js"></script>
 </body>
 </html>

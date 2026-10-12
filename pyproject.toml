@@ -1,6 +1,6 @@
 [project]
 name = "yt-zhuyin"
-version = "0.6.4"
+version = "0.8.0"
 description = "YouTube 注音 transcript userscript, with a local Whisper ASR service"
 authors = [{ name = "Matas Minelga" }]
 requires-python = ">=3.13"

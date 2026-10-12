@@ -66,5 +66,6 @@
     } catch (e) { console.error('[yt-zhuyin]', e); showStatus('Failed: ' + e.message, [retryBtn, whisperBtn]); }
   }
 
-  window.addEventListener('yt-navigate-finish', () => { currentVideo = null; init(); });
+  // syncBelow first: leaving /watch must bring YouTube's header back
+  window.addEventListener('yt-navigate-finish', () => { syncBelow(); currentVideo = null; init(); });
   init();

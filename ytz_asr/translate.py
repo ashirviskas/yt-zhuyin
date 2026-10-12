@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from . import Config, Json, log, release_memory
+from . import Config, Json, log, release_memory, write_json
 
 if TYPE_CHECKING:
     from opencc import OpenCC
@@ -105,7 +105,7 @@ def cache_flush(cfg: Config) -> None:
     if not _dirty:
         return
     try:
-        _ = cfg.mt_cache_file.write_text(json.dumps(_cache, ensure_ascii=False), encoding="utf-8")
+        write_json(cfg.mt_cache_file, _cache)
         _dirty = 0
     except OSError as e:
         log("MT cache write failed:", e)
@@ -171,6 +171,8 @@ def live_worker(cfg: Config, pending: Callable[[], list[str]]) -> None:
     """
     while True:
         time.sleep(_LIVE_EVERY_SEC)
+        if not cfg.live_translate:  # a dashboard setting: checked every pass
+            continue
         try:
             todo = [t for t in dict.fromkeys(pending()) if t.strip() and t not in _cache]
             if todo:

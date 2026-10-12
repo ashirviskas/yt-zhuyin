@@ -64,7 +64,9 @@ falls back to it automatically when a video has no Chinese track; the source dro
 a **whisper (local)** entry to force it on any video. Transcription streams in — lines appear as they are
 decoded — and the panel polls while it works.
 
-Useful flags:
+Useful flags. Everything but `--port` and `--mt` can also be changed from the dashboard while the server runs;
+those changes are saved to `~/.cache/yt-zhuyin/settings.json`, and a flag passed on the command line wins over
+the saved value for that run.
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -73,7 +75,7 @@ Useful flags:
 | `--mt` | `Helsinki-NLP/opus-mt-zh-en` | model behind `/translate`; `none` disables local English |
 | `--audio-cache-gb` | `2.0` | keep downloaded audio up to this size (LRU); `0` discards it |
 | `--lease-sec` | `60` | pause a job when no browser tab has polled it for this long |
-| `--workers` | `2` | videos transcribed at once; CPU cores are split between them |
+| `--workers` | `2` | videos transcribed at once; CPU cores are split between them, and each worker keeps its own copy of the model in RAM |
 | `--idle-unload-sec` | `61` | drop the model weights after this much idle time and reload on demand; `0` keeps them |
 | `--no-live-translate` | off | only translate on request instead of alongside transcription |
 
@@ -84,9 +86,17 @@ memory and cache meters, and two history charts — memory over the last ten min
 what was running when (transcribing, downloading, queued, translating). Hover either chart and both show a
 crosshair at that instant with the memory and the running counts, Grafana-style.
 
-Click **preview** on a job for the transcript next to a player for the cached audio. **follow** keeps the
+The dashboard can also act. Paste a YouTube URL or video id into the box at the top to transcribe it without
+a tab open (the job then ignores the lease). Every job and every video in the **Library** — finished
+transcripts, partial ones, and audio that was downloaded but never transcribed — has icon buttons to preview,
+start or resume, stop, open on YouTube, and delete. **Stop** keeps everything decoded so far and the job stays
+stopped until you start it again, even if a tab is still polling. **Settings** (at the bottom) changes the
+model, worker count, lease, unload timeout, audio cache size and translation switches live. A model or worker
+change waits until no job is running, and the old weights are dropped before the new ones load.
+
+Click the eye icon on a job for the transcript next to a player for the cached audio. The crosshair icon (follow) keeps the
 newest line in view while a job is still transcribing and tracks the playing line once you hit play;
-**English** shows a translation under each line, filling in a few lines per refresh so a poll never stalls.
+the translate icon shows English under each line, filling in a few lines per refresh so a poll never stalls.
 Click any line to seek the audio to it. The preview sits outside the refreshing regions, so audio keeps
 playing while the stats update.
 
@@ -120,7 +130,11 @@ curl -s localhost:8765/status?pretty=1
 `lease_expires_in_sec` counts down to the pause described below.
 
 Jobs are tied to a polling tab: close the tab and the current job pauses within a minute, keeping whatever it
-had decoded; reopening resumes from there. Finished transcripts live in `~/.cache/yt-zhuyin/<videoId>.json`,
+had decoded; reopening resumes from there. A running job also saves its progress to
+`~/.cache/yt-zhuyin/<videoId>.partial.json` every 30 seconds, on error, and on Ctrl+C, so stopping or killing
+the server costs at most 30 seconds of work. Audio is decoded and transcribed in two-minute windows: handing a
+whole file to faster-whisper decodes all of it and builds its spectrogram in one go, about 0.75 MB per second of
+audio, which is 2.5 GB for an hour-long stream. Finished transcripts live in `~/.cache/yt-zhuyin/<videoId>.json`,
 audio in `~/.cache/yt-zhuyin/audio/`, and translated lines in `~/.cache/yt-zhuyin/mt_cache.json`. Delete any of
 them to start over.
 
@@ -242,13 +256,14 @@ package next to it:
 
 | File | Contents |
 |---|---|
-| `ytz_asr/__init__.py` | `Config`, shared types, `log()` |
+| `ytz_asr/__init__.py` | `Config` (and the settings the dashboard changes), shared types, `write_json()`, `log()` |
 | `ytz_asr/jobs.py` | `Job` and `JobStore` — every piece of mutable state, behind one lock |
 | `ytz_asr/asr.py` | yt-dlp download, the audio LRU cache, Whisper transcription, the worker loop |
 | `ytz_asr/translate.py` | the Marian zh→en model and its translation memory |
 | `ytz_asr/server.py` | FastAPI routes: the JSON API, the dashboard fragments, audio streaming |
 | `ytz_asr/dashboard.py` | renders the HTML fragments htmx swaps in |
 | `ytz_asr/history.py` | the sampler behind the charts: memory and per-state counts every 2s |
+| `ytz_asr/titles.py` | video titles from YouTube's oEmbed endpoint, cached in `titles.json` |
 | `ytz_asr/static/` | `index.html`, `dashboard.css`, `dashboard.js` — plain files, no build step |
 
 Needs Python 3.13+. FastAPI earns its place mainly through `FileResponse`: audio preview needs HTTP range

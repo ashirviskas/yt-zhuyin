@@ -7,9 +7,11 @@ panel sits outside it so an audio element is never swapped away mid-playback.
 
 import html
 import json
+import os
+import time
 from pathlib import Path
 
-from . import Json, Segment
+from . import Config, Json, Segment
 
 STATIC = Path(__file__).parent / "static"
 PREVIEW_LINES = 300
@@ -23,6 +25,58 @@ _ACT = {            # stacking order, bottom to top
     "queued": "#4b5563",
     "translating": "#60a5fa",
 }
+
+
+# Lucide-style strokes on a 24px grid; inline so the page needs nothing but htmx
+_ICONS = {
+    "play": '<path d="M7 4.5v15l12-7.5z"/>',
+    "stop": '<rect x="6" y="6" width="12" height="12" rx="2"/>',
+    "trash": '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/>',
+    "eye": '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+    "x": '<path d="M18 6 6 18M6 6l12 12"/>',
+    "plus": '<path d="M12 5v14M5 12h14"/>',
+    "link": '<path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+    "pin": '<path d="M12 17v5M9 3h6l-1 7 4 3v2H6v-2l4-3z"/>',
+    "follow": '<circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/>',
+    "lang": '<path d="m5 8 6 6M4 14l6-6 2-3M2 5h12M7 2h1M22 22l-5-10-5 10M14 18h6"/>',
+    "save": '<path d="M5 12l5 5L20 7"/>',
+}
+
+
+def icon(name: str) -> str:
+    return (
+        '<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
+        f'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{_ICONS[name]}</svg>'
+    )
+
+
+def _btn(name: str, title: str, attrs: str, kind: str = "") -> str:
+    return f'<button class="ib {kind}" title="{title}" aria-label="{title}" {attrs}>{icon(name)}</button>'
+
+
+def _actions(vid: str, status: str, done: bool) -> str:
+    """Icon buttons shared by job cards and library rows. Each POST answers with an
+    HX-Trigger that refreshes both lists, so nothing is swapped in place."""
+    out = [_btn("eye", "Preview", f'hx-get="/ui/job/{vid}" hx-target="#detail" hx-swap="innerHTML show:#detail:top"')]
+    if status in ("queued", "downloading", "transcribing", "translating"):
+        out.append(_btn("stop", "Stop (keeps what is transcribed)", f'hx-post="/job/{vid}/stop" hx-swap="none"'))
+    elif not done or status == "error":
+        verb = "Retry" if status == "error" else "Transcribe" if status == "new" else "Resume"
+        out.append(_btn("play", f"{verb} (keeps going without a YouTube tab)",
+                        f'hx-post="/job/{vid}/start?force=1" hx-swap="none"', "go"))
+    out.append(f'<a class="ib" title="Open on YouTube" aria-label="Open on YouTube" target="_blank" rel="noopener" '
+               f'href="https://www.youtube.com/watch?v={vid}">{icon("link")}</a>')
+    out.append(_btn("trash", "Delete transcript and audio",
+                    f'hx-delete="/transcript/{vid}?audio=1" hx-swap="none" '
+                    f'hx-confirm="Delete the transcript, partial and audio for {vid}?"', "danger"))
+    return '<span class="acts">' + "".join(out) + "</span>"
+
+
+def _name(vid: str, title: str | None) -> str:
+    v = _esc(vid)
+    if title:
+        return f'<span class="name"><span class="title">{_esc(title)}</span><code class="vid">{v}</code></span>'
+    return f'<span class="name"><code class="vid">{v}</code></span>'
 
 
 def _dur(sec: float | None) -> str:
@@ -49,7 +103,7 @@ def _bar(fraction: float, kind: str = "") -> str:
     return f'<div class="bar {kind}"><i style="width:{pct:.1f}%"></i></div>'
 
 
-def _job(job: Json) -> str:
+def _job(job: Json, title: str | None) -> str:
     status = _esc(job["status"])
     vid = _esc(job["vid"])
     bits: list[str] = [f'{job["segments"]} lines', f'{job["words"]} words']
@@ -59,14 +113,16 @@ def _job(job: Json) -> str:
         bits.append(f'{job["speed_x"]}×')
     if job["eta_sec"]:
         bits.append(f'eta {_dur(job["eta_sec"])}')
-    bits.append(f'lease {_dur(job["lease_expires_in_sec"])}')
+    if job["status"] not in ("ready", "error", "stopped"):
+        bits.append("no tab needed" if job["forced"] else f'lease {_dur(job["lease_expires_in_sec"])}')
     err = f'<div class="err">{_esc(job["error"])}</div>' if job["error"] else ""
+    pin = f'<span class="tag" title="Started from the dashboard: runs without a YouTube tab">{icon("pin")}</span>' if job["forced"] else ""
     return f"""<article class="job {status}">
   <div class="row">
-    <code class="vid">{vid}</code>
-    <span class="pill {status}">{status}</span>
+    {_name(job["vid"], title)}
+    <span class="pill {status}">{status}</span>{pin}
     <span class="spacer"></span>
-    <button hx-get="/ui/job/{vid}" hx-target="#detail" hx-swap="innerHTML">preview</button>
+    {_actions(vid, job["status"], job["status"] == "ready")}
   </div>
   {_bar(float(job["progress"]))}
   <div class="meta">{' · '.join(bits)}</div>{err}
@@ -109,11 +165,107 @@ def _loaded_note(info: Json, extra: str) -> str:
     return f"loaded · {extra}"
 
 
-def jobs_list(data: Json) -> str:
+def jobs_list(data: Json, titles: dict[str, str | None]) -> str:
     jobs: list[Json] = data["jobs"]
     if not jobs:
-        return '<h2>Jobs</h2><p class="muted">No jobs. Open a YouTube video with the userscript active, or hit /transcript/&lt;videoId&gt;.</p>'
-    return "<h2>Jobs</h2>" + "".join(_job(j) for j in jobs)
+        return ('<h2>Jobs</h2><p class="muted">Nothing running. Paste a video above, press '
+                f'{icon("play")} in the library, or open a YouTube video with the userscript.</p>')
+    return "<h2>Jobs</h2>" + "".join(_job(j, titles.get(j["vid"])) for j in jobs)
+
+
+def library(rows: list[Json], titles: dict[str, str | None]) -> str:
+    """Everything in the cache dir, newest first, one compact row each."""
+    if not rows:
+        return '<h2>Library</h2><p class="muted">The cache is empty.</p>'
+    out = [f'<h2>Library <span class="muted">{len(rows)}</span></h2><div class="lib">']
+    for r in rows:
+        vid, status = r["vid"], r["status"]
+        kind = "ready" if r["done"] else "partial" if r["partial"] else "audio"
+        label = {"ready": "done", "partial": "partial", "audio": "audio only"}[kind]
+        live = f'<span class="pill {_esc(status)}">{_esc(status)}</span>' if status not in ("new", "ready") else ""
+        audio = f'{r["audio_mb"]:.0f} MB' if r["audio_mb"] else "no audio"
+        when = time.strftime("%b %d", time.localtime(r["t"]))
+        out.append(f"""<div class="librow">
+  {_name(vid, titles.get(vid))}
+  <span class="badge {kind}">{label}</span>{live}
+  <span class="spacer"></span>
+  <span class="num">{audio} · {when}</span>
+  {_actions(_esc(vid), status, r["done"])}
+</div>""")
+    return "".join(out) + "</div>"
+
+
+# approximate resident size of the int8 weights, per model replica
+_MODELS = {"tiny": "~150 MB", "base": "~250 MB", "small": "~500 MB", "medium": "~1.5 GB", "large-v3": "~3 GB"}
+
+
+def settings(cfg: Config, note: str = "") -> str:
+    """The settings form. It lives outside every polling region so typing is never swapped away."""
+
+    def flag(key: str) -> str:
+        return f'<span class="flag" title="Passed on the command line: wins again on the next start">--{key.replace("_", "-")}</span>' if key in cfg.flags else ""
+
+    names = dict(_MODELS)
+    if cfg.model not in names:
+        names[cfg.model] = "custom"
+    opts = "".join(
+        f'<option value="{_esc(m)}"{" selected" if m == cfg.model else ""}>{_esc(m)} · {ram}</option>'
+        for m, ram in names.items()
+    )
+    cores = os.cpu_count() or 4
+
+    def num(key: str, label: str, lo: float, hi: float, step: float, hint: str) -> str:
+        val = getattr(cfg, key)
+        return f"""<label class="field"><span class="lbl">{label}{flag(key)}</span>
+  <input type="number" name="{key}" value="{val}" min="{lo}" max="{hi}" step="{step}">
+  <span class="hint">{hint}</span></label>"""
+
+    def switch(key: str, label: str, hint: str) -> str:
+        on = " checked" if getattr(cfg, key) else ""
+        return f"""<label class="field sw"><input type="checkbox" name="{key}" value="1"{on}><i></i>
+  <span><span class="lbl">{label}{flag(key)}</span><span class="hint">{hint}</span></span></label>"""
+
+    msg = f'<span class="saved">{icon("save")} {_esc(note)}</span>' if note else ""
+    return f"""<form class="settings" hx-post="/settings" hx-target="this" hx-swap="outerHTML">
+  <div class="grid">
+    <label class="field"><span class="lbl">Whisper model{flag("model")}</span>
+      <select name="model">{opts}</select>
+      <span class="hint">RAM per worker. Swaps when no job is running.</span></label>
+    {num("workers", "Workers", 1, cores, 1, f"Videos at once. Each adds a model replica in RAM and splits the {cores} cores.")}
+    {num("lease_sec", "Lease (s)", 10, 86400, 1, "Pause a job when no tab polled it for this long.")}
+    {num("idle_unload_sec", "Unload after idle (s)", 0, 86400, 1, "Give the weights back to the OS. 0 keeps them loaded.")}
+    {num("audio_cache_gb", "Audio cache (GB)", 0, 1000, 0.5, "Downloaded audio kept for previews and resumes.")}
+    {switch("live_translate", "Live translation", "Translate lines while a job is still transcribing.")}
+    {switch("whisper_translate", "Whisper English pass", "Second full pass after each job. Doubles CPU time.")}
+  </div>
+  <div class="row"><button class="primary" type="submit">{icon("save")} Save</button>{msg}</div>
+</form>"""
+
+
+def parse_settings(cfg: Config, form: dict[str, str]) -> str:
+    """Apply a settings form to cfg in place. Returns what the user should know."""
+    before = (cfg.model, cfg.workers)
+    model = form.get("model", "").strip()
+    if model and all(c.isalnum() or c in "-_./" for c in model):
+        cfg.model = model
+
+    def clamp(key: str, lo: float, hi: float) -> None:
+        try:
+            v = float(form[key])
+        except (KeyError, ValueError):
+            return
+        cur = getattr(cfg, key)
+        setattr(cfg, key, type(cur)(min(hi, max(lo, v))))
+
+    clamp("workers", 1, os.cpu_count() or 4)
+    clamp("lease_sec", 10, 86400)
+    clamp("idle_unload_sec", 0, 86400)
+    clamp("audio_cache_gb", 0, 1000)
+    cfg.live_translate = form.get("live_translate") == "1"
+    cfg.whisper_translate = form.get("whisper_translate") == "1"
+    if (cfg.model, cfg.workers) != before:
+        return "saved · whisper reloads once no job is running"
+    return "saved"
 
 
 def charts(data: Json) -> str:
@@ -181,7 +333,7 @@ def charts(data: Json) -> str:
 </div>"""
 
 
-def detail(vid: str, audio: Path | None) -> str:
+def detail(vid: str, title: str | None, audio: Path | None) -> str:
     """The stable half of the preview: controls and the player.
 
     The lines below poll on their own so this audio element is never swapped
@@ -194,11 +346,13 @@ def detail(vid: str, audio: Path | None) -> str:
         else '<p class="muted">No cached audio for this video.</p>'
     )
     return f"""<div class="row">
-  <code class="vid">{v}</code>
+  {_name(vid, title)}
   <span class="spacer"></span>
-  <label class="chk"><input type="checkbox" id="follow" checked> follow</label>
-  <label class="chk"><input type="checkbox" id="show-en" name="en" value="1"> English</label>
-  <button onclick="document.getElementById('detail').innerHTML=''">close</button>
+  <span class="acts">
+    <label class="ib tog" title="Follow the newest / playing line"><input type="checkbox" id="follow" checked hidden>{icon("follow")}</label>
+    <label class="ib tog" title="English under each line"><input type="checkbox" id="show-en" name="en" value="1" hidden>{icon("lang")}</label>
+    <button class="ib" title="Close" aria-label="Close" onclick="document.getElementById('detail').innerHTML=''">{icon("x")}</button>
+  </span>
 </div>
 {player}
 <div id="lines" class="lines"
@@ -221,7 +375,7 @@ def lines(segs: list[Segment], total: int, live: bool, english: list[str] | None
             text = english[i] if i < len(english) else ""
             en = f'<span class="en">{_esc(text)}</span>' if text else '<span class="en pending">…</span>'
         out.append(
-            f'<p data-t="{seg["start"]:.2f}"><span class="t">{_dur(seg["start"])}</span>'
+            f'<p data-t="{seg["start"]:.2f}"><span class="t">{_dur(seg["start"]) if seg["start"] >= 1 else "0s"}</span>'
             f'<span class="txt"><span class="zh">{_esc(seg["text"])}</span>{en}</span></p>'
         )
     return "".join(out)

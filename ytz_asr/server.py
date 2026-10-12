@@ -6,6 +6,7 @@ dashboard at /. CORS is open but the socket only listens on loopback.
 
 import json
 import os
+import re
 import threading
 import time
 import traceback
@@ -13,17 +14,22 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import uvicorn
-from fastapi import Body, FastAPI, HTTPException, Path as PathParam, Query
+from urllib.parse import parse_qs
+
+from fastapi import Body, FastAPI, HTTPException, Path as PathParam, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from . import Config, Json, log
-from . import asr, dashboard, history, translate
+from . import SETTINGS, Config, Json, log
+from . import asr, dashboard, history, titles, translate
 from .jobs import JobStore
 
 _MAX_LINES = 2000
 _VID = r"^[A-Za-z0-9_-]{11}$"
+# a bare id, or any youtube.com / youtu.be URL carrying one
+_VID_IN = re.compile(r"(?:v=|youtu\.be/|shorts/|live/|embed/)([A-Za-z0-9_-]{11})|^([A-Za-z0-9_-]{11})$")
+_REFRESH = {"HX-Trigger": "ytz-refresh"}  # tells the job list and the library to reload now
 
 _cfg: Config
 _jobs: JobStore
@@ -70,16 +76,38 @@ def _memory() -> Json:
     }
 
 
+def _library() -> list[Json]:
+    """One row per video id in the cache dir, from file names and stat() alone."""
+    rows: dict[str, Json] = {}
+
+    def row(vid: str, mtime: float) -> Json:
+        r = rows.setdefault(vid, {"vid": vid, "done": False, "partial": False, "audio_mb": 0.0, "t": 0.0})
+        r["t"] = max(r["t"], mtime)
+        return r
+
+    for p in _cfg.cache.glob("*.json"):
+        partial = p.name.endswith(".partial.json")
+        vid = p.name.removesuffix(".partial.json") if partial else p.stem
+        if re.match(_VID, vid):  # skips mt_cache.json, settings.json, titles.json
+            row(vid, p.stat().st_mtime)["partial" if partial else "done"] = True
+    for p in _cfg.audio.glob("*.m4a"):
+        if re.match(_VID, p.stem):
+            st = p.stat()
+            row(p.stem, st.st_mtime)["audio_mb"] = st.st_size / 1e6
+    states = _jobs.states()
+    for r in rows.values():
+        r["status"] = states.get(r["vid"], "ready" if r["done"] else "new")
+    return sorted(rows.values(), key=lambda r: r["t"], reverse=True)
+
+
 def _cache_info() -> Json:
-    files = list(_cfg.cache.glob("*.json"))
+    rows = _library()
     return {
         "audio_mb": round(asr.audio_bytes(_cfg) / 1e6, 1),
         "audio_limit_mb": round(_cfg.audio_max_bytes / 1e6),
         "audio_files": asr.audio_files(_cfg),
-        "transcripts": sum(
-            1 for p in files if not p.name.endswith(".partial.json") and p.name != "mt_cache.json"
-        ),
-        "partials": sum(1 for p in files if p.name.endswith(".partial.json")),
+        "transcripts": sum(1 for r in rows if r["done"]),
+        "partials": sum(1 for r in rows if r["partial"] and not r["done"]),
         "dir": str(_cfg.cache),
     }
 
@@ -112,9 +140,41 @@ def get_transcript(vid: Vid) -> Json:
 
 
 @app.delete("/transcript/{vid}")
-def delete_transcript(vid: Vid, audio: int = Query(0)) -> Json:
+def delete_transcript(vid: Vid, audio: int = Query(0)) -> JSONResponse:
     _jobs.forget(vid, drop_audio=audio == 1)
-    return {"deleted": vid}
+    return JSONResponse({"deleted": vid}, headers=_REFRESH)
+
+
+@app.post("/job/{vid}/start")
+def post_start(vid: Vid, force: int = Query(0)) -> JSONResponse:
+    """Start or resume. force=1 (the dashboard) keeps it running without a polling tab."""
+    _jobs.start(vid, force=force == 1)
+    return JSONResponse({"started": vid}, headers=_REFRESH)
+
+
+@app.post("/job/{vid}/stop")
+def post_stop(vid: Vid) -> JSONResponse:
+    """Pause after the current segment, keep the partial, don't auto-resume on the next poll."""
+    _jobs.stop(vid)
+    return JSONResponse({"stopped": vid}, headers=_REFRESH)
+
+
+async def _form(request: Request) -> dict[str, str]:
+    """A urlencoded form body, without pulling in python-multipart for two forms."""
+    body = (await request.body()).decode("utf-8", "replace")
+    return {k: v[-1] for k, v in parse_qs(body).items()}
+
+
+@app.post("/jobs", response_class=HTMLResponse)
+async def post_jobs(request: Request) -> HTMLResponse:
+    """The dashboard's add-video box: an id or any YouTube URL."""
+    text = (await _form(request)).get("video", "").strip()
+    m = _VID_IN.search(text)
+    if not m:
+        return HTMLResponse('<span class="err">not a video id or YouTube URL</span>')
+    vid = m.group(1) or m.group(2)
+    _jobs.start(vid, force=True)
+    return HTMLResponse(f'<span class="ok">queued {vid}</span>', headers=_REFRESH)
 
 
 @app.post("/translate")
@@ -158,9 +218,38 @@ def get_cards_fragment() -> str:
     return dashboard.cards(snapshot())
 
 
+def _titles(vids: list[str]) -> dict[str, str | None]:
+    return {v: titles.get(_cfg, v) for v in vids}
+
+
 @app.get("/ui/jobs", response_class=HTMLResponse)
 def get_jobs_fragment() -> str:
-    return dashboard.jobs_list(snapshot())
+    data = snapshot()
+    return dashboard.jobs_list(data, _titles([j["vid"] for j in data["jobs"]]))
+
+
+@app.get("/ui/library", response_class=HTMLResponse)
+def get_library_fragment() -> str:
+    rows = _library()
+    return dashboard.library(rows, _titles([r["vid"] for r in rows]))
+
+
+@app.get("/ui/settings", response_class=HTMLResponse)
+def get_settings_fragment() -> str:
+    return dashboard.settings(_cfg)
+
+
+@app.post("/settings", response_class=HTMLResponse)
+async def post_settings(request: Request) -> HTMLResponse:
+    workers, audio = _cfg.workers, _cfg.audio_cache_gb
+    note = dashboard.parse_settings(_cfg, await _form(request))
+    _cfg.save_settings()
+    if _cfg.workers != workers:
+        asr.ensure_workers(_cfg, _jobs)
+    if _cfg.audio_cache_gb < audio:
+        asr.evict_audio(_cfg)
+    log("settings:", {k: getattr(_cfg, k) for k in SETTINGS})
+    return HTMLResponse(dashboard.settings(_cfg, note), headers=_REFRESH)
 
 
 @app.get("/ui/charts", response_class=HTMLResponse)
@@ -176,7 +265,7 @@ def get_history(limit: int = Query(history.KEEP)) -> Json:
 @app.get("/ui/job/{vid}", response_class=HTMLResponse)
 def get_job_fragment(vid: Vid) -> str:
     audio = _cfg.audio / f"{vid}.m4a"
-    return dashboard.detail(vid, audio if audio.exists() else None)
+    return dashboard.detail(vid, titles.get(_cfg, vid), audio if audio.exists() else None)
 
 
 @app.get("/ui/lines/{vid}", response_class=HTMLResponse)
@@ -217,4 +306,5 @@ def serve(cfg: Config, jobs: JobStore) -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        jobs.checkpoint_all()
         translate.cache_flush(cfg)

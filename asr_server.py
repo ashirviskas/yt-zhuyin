@@ -37,23 +37,28 @@ Endpoints (CORS open, only bound to 127.0.0.1):
                                    activity charts, transcript and audio preview per job
     GET /history[?limit=N]      -> the samples behind those charts
     DELETE /transcript/<videoId>[?audio=1]  -> drop the cache entry (and its audio)
+    POST /job/<videoId>/start[?force=1]     -> start or resume; force: keep going without a polling tab
+    POST /job/<videoId>/stop                -> pause after the current segment, keep the partial
+    POST /jobs  video=<id or URL>           -> the dashboard's add box (forced)
+    POST /settings                          -> the dashboard's settings form, saved to settings.json
 
 First GET for a video starts the job; subsequent GETs return progress (segments so far) and act as a
 heartbeat. If no GET arrives for --lease-sec (default 60) the job is paused after its current segment and
-its partial result kept; the next GET resumes from where it stopped. Queued jobs nobody is polling for
+its partial result kept; the next GET resumes from where it stopped. Running jobs also checkpoint every 30 s,
+on error and on shutdown. A stopped or failed job waits for an explicit /start. Queued jobs nobody is polling for
 are skipped the same way, so closing the tab stops the CPU burn within a minute.
 Results are cached in ~/.cache/yt-zhuyin/<videoId>.json; downloaded audio in ~/.cache/yt-zhuyin/audio/ (LRU, --audio-cache-gb).
 
 Code lives in ytz_asr/: jobs.py (state), asr.py (audio + whisper), translate.py (zh->en),
-server.py (FastAPI routes), dashboard.py (the HTML).
+server.py (FastAPI routes), dashboard.py (the HTML), titles.py (video titles for the dashboard).
 """
 
 import argparse
 import threading
 import time
 
-from ytz_asr import Config, log
-from ytz_asr import asr, server, translate
+from ytz_asr import SETTINGS, Config, log
+from ytz_asr import asr, server, titles, translate
 from ytz_asr.jobs import JobStore
 
 FLUSH_EVERY_SEC = 30
@@ -61,36 +66,37 @@ JANITOR_EVERY_SEC = 15
 
 
 def parse_args() -> Config:
+    """Flags left out keep the value saved from the dashboard (settings.json), then the default."""
     p = argparse.ArgumentParser(description="Local Whisper ASR + translation service for yt-zhuyin.")
-    _ = p.add_argument("--model", default="small",
-                       help="faster-whisper model: tiny/base/small/medium/large-v3 or a HF repo id")
+    _ = p.add_argument("--model",
+                       help="faster-whisper model: tiny/base/small/medium/large-v3 or a HF repo id (default small)")
     _ = p.add_argument("--port", type=int, default=8765)
-    _ = p.add_argument("--workers", type=int, default=2,
-                       help="videos transcribed at once; CPU cores are split between them")
-    _ = p.add_argument("--translate", action="store_true",
+    _ = p.add_argument("--workers", type=int,
+                       help="videos transcribed at once; CPU cores are split between them (default 2)")
+    _ = p.add_argument("--translate", dest="whisper_translate", action="store_const", const=True,
                        help="also produce whisper's own English pass (doubles CPU time; usually worse than /translate)")
     _ = p.add_argument("--mt", default="Helsinki-NLP/opus-mt-zh-en",
                        help="HF Marian model for /translate, or 'none' to disable")
-    _ = p.add_argument("--no-live-translate", action="store_true",
+    _ = p.add_argument("--no-live-translate", dest="live_translate", action="store_const", const=False,
                        help="only translate on request, instead of alongside transcription")
-    _ = p.add_argument("--audio-cache-gb", type=float, default=2.0,
-                       help="keep downloaded audio up to this size (LRU), 0 = don't keep")
-    _ = p.add_argument("--lease-sec", type=int, default=60,
-                       help="pause a job if no client polled it for this long")
-    _ = p.add_argument("--idle-unload-sec", type=int, default=61,
-                       help="drop model weights after this many idle seconds, 0 = keep loaded")
-    a = p.parse_args()
-    return Config(
-        model=str(a.model),
-        port=int(a.port),
-        workers=max(1, int(a.workers)),
-        whisper_translate=bool(a.translate),
-        mt=None if str(a.mt).lower() == "none" else str(a.mt),
-        live_translate=not bool(a.no_live_translate),
-        audio_max_bytes=int(float(a.audio_cache_gb) * 1024**3),
-        lease_sec=int(a.lease_sec),
-        idle_unload_sec=int(a.idle_unload_sec),
+    _ = p.add_argument("--audio-cache-gb", type=float,
+                       help="keep downloaded audio up to this size (LRU), 0 = don't keep (default 2)")
+    _ = p.add_argument("--lease-sec", type=int,
+                       help="pause a job if no client polled it for this long (default 60)")
+    _ = p.add_argument("--idle-unload-sec", type=int,
+                       help="drop model weights after this many idle seconds, 0 = keep loaded (default 61)")
+    a = vars(p.parse_args())
+    given = {k: a[k] for k in SETTINGS if a.get(k) is not None}
+    if "workers" in given:
+        given["workers"] = max(1, int(given["workers"]))
+    cfg = Config(
+        port=int(a["port"]),
+        mt=None if str(a["mt"]).lower() == "none" else str(a["mt"]),
+        flags=frozenset(given),
+        **given,
     )
+    cfg.load_settings()
+    return cfg
 
 
 def flush_periodically(cfg: Config) -> None:
@@ -112,14 +118,14 @@ def main() -> None:
     cfg.mkdirs()
     asr.load_model(cfg)
     translate.cache_load(cfg)
+    titles.load(cfg)
     jobs = JobStore(cfg)
-    for n in range(cfg.workers):
-        threading.Thread(target=asr.worker, args=(cfg, jobs), name=f"worker-{n}", daemon=True).start()
+    asr.ensure_workers(cfg, jobs)
     log(f"{cfg.workers} transcription worker(s)")
     threading.Thread(target=flush_periodically, args=(cfg,), daemon=True).start()
-    if cfg.idle_unload_sec:
-        threading.Thread(target=janitor, args=(cfg,), daemon=True).start()
-    if cfg.mt and cfg.live_translate:
+    # always running: the unload timeout and live translation can be switched on from the dashboard
+    threading.Thread(target=janitor, args=(cfg,), daemon=True).start()
+    if cfg.mt:
         threading.Thread(target=translate.live_worker, args=(cfg, jobs.active_texts), daemon=True).start()
     server.serve(cfg, jobs)
     log("bye")

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube 注音 transcript (zh-TW + zhuyin, pinyin optional, English)
 // @namespace    local.yt-zhuyin
-// @version      0.7.0
+// @version      0.8.0
 // @description  Side panel: traditional Chinese captions segmented into words with zhuyin from a Taiwan (McBopomofo) dictionary, optional pinyin derived from the zhuyin, English line, click-to-seek.
 // @match        https://www.youtube.com/*
 // @homepageURL  https://github.com/ashirviskas/yt-zhuyin
@@ -129,6 +129,45 @@
   const CJK = /[\u3400-\u9fff\uf900-\ufaff\u3000-\u303f\uff00-\uffef]/;
   const charWidth = (ch) => CJK.test(ch) ? 1 : 1 / 3;
   const textWidth = (text) => { let w = 0; for (const ch of text) w += charWidth(ch); return w; };
+  // ---------------------------------------------------------------- icons
+  // Lucide-style strokes on a 24px grid. Built with createElementNS because YouTube
+  // enforces Trusted Types: innerHTML with a plain string throws there.
+  const ring = (cx, cy, r) => `M${cx - r} ${cy}a${r} ${r} 0 1 0 ${2 * r} 0a${r} ${r} 0 1 0 ${-2 * r} 0`;
+  const FRAME = 'M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z';
+  const ICONS = {
+    refresh: 'M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5',
+    trash: 'M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6',
+    stop: 'M8 6h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z',
+    play: 'M7 4.5v15l12-7.5z',
+    follow: ring(12, 12, 3) + 'M12 2v4M12 18v4M2 12h4M18 12h4',
+    lang: 'm5 8 6 6M4 14l6-6 2-3M2 5h12M7 2h1M22 22l-5-10-5 10M14 18h6',
+    pinyin: 'M6 3h12' + ring(11, 14.5, 5.5) + 'M16.5 9v11',                   // ā
+    zyTop: 'M6 4h12M5 9h14a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V10a1 1 0 0 1 1-1z',   // reading above the character
+    byLine: 'M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01',
+    width: 'M3 12h18M7 8l-4 4 4 4M17 8l4 4-4 4',
+    alpha: 'M12 2.7 6.3 8.4a8 8 0 1 0 11.4 0z',
+    side: FRAME + 'M15 3v18',
+    below: FRAME + 'M3 15h18',
+    overlay: FRAME + 'M13 12h5v5h-5z',
+  };
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  function icon(name) {
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    for (const [k, v] of Object.entries({ viewBox: '0 0 24 24', width: 18, height: 18, fill: 'none', stroke: 'currentColor',
+      'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true' })) svg.setAttribute(k, v);
+    const p = document.createElementNS(SVG_NS, 'path'); p.setAttribute('d', ICONS[name]); svg.appendChild(p);
+    return svg;
+  }
+  function iconBtn(name, title, onclick) {
+    const b = document.createElement('button'); b.className = 'ytz-ib'; b.title = title; b.setAttribute('aria-label', title);
+    b.appendChild(icon(name)); b.onclick = onclick; return b;
+  }
+  // pressed state lives in aria-pressed, which the CSS also styles
+  function toggleBtn(name, title, on, onchange) {
+    const b = iconBtn(name, title, () => { const v = b.getAttribute('aria-pressed') !== 'true'; b.setAttribute('aria-pressed', v); onchange(v); });
+    b.setAttribute('aria-pressed', !!on); return b;
+  }
+  const group = (...els) => { const g = document.createElement('span'); g.className = 'ytz-grp-i'; g.append(...els.filter(Boolean)); return g; };
   function pickZhTrack(tracks) {
     for (const code of CFG.zhPreference) {
       const t = tracks.find(t => t.languageCode === code && t.kind !== 'asr') || tracks.find(t => t.languageCode === code);
@@ -283,13 +322,22 @@
   // ---------------------------------------------------------------- render
   const CSS = `
   #ytz-panel{margin:0 0 12px;border:1px solid var(--yt-spec-10-percent-layer,#333);border-radius:12px;background:var(--yt-spec-base-background,#0f0f0f);color:var(--yt-spec-text-primary,#f1f1f1);font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",Roboto,sans-serif;overflow:hidden}
-  #ytz-head{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--yt-spec-10-percent-layer,#333);font-size:13px}
-  #ytz-head .ytz-title{font-weight:500;margin-right:auto}
-  #ytz-head label{display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none}
-  #ytz-head button{background:transparent;color:inherit;border:1px solid var(--yt-spec-10-percent-layer,#333);border-radius:4px;padding:2px 8px;cursor:pointer;font:inherit}
-  #ytz-head button:hover{background:var(--yt-spec-badge-chip-background,#272727)}
-  #ytz-head input[type=range]{width:90px;accent-color:#ff0033}
-  #ytz-head select{background:transparent;color:inherit;border:1px solid var(--yt-spec-10-percent-layer,#333);border-radius:4px}
+  #ytz-head{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;padding:8px 10px 8px 14px;border-bottom:1px solid var(--yt-spec-10-percent-layer,#333);font:13px Roboto,"Noto Sans TC",sans-serif}
+  #ytz-head .ytz-title{font-weight:500;font-size:14px;margin-right:auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+  #ytz-head .ytz-tools{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px}
+  #ytz-head .ytz-grp-i{display:inline-flex;align-items:center;gap:2px}
+  #ytz-head .ytz-grp-i + .ytz-grp-i{border-left:1px solid var(--yt-spec-10-percent-layer,#333);padding-left:10px}
+  #ytz-head label{display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none;color:var(--yt-spec-text-secondary,#aaa)}
+  #ytz-head label svg{width:16px;height:16px}
+  .ytz-ib{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;padding:0;border:0;border-radius:8px;background:transparent;color:var(--yt-spec-text-secondary,#aaa);cursor:pointer}
+  .ytz-ib:hover{background:var(--yt-spec-badge-chip-background,#272727);color:var(--yt-spec-text-primary,#f1f1f1)}
+  .ytz-ib[aria-pressed=true]{color:#ff4e6a;background:rgba(255,0,51,.12)}
+  .ytz-ib.ytz-danger:hover{color:#ff5555}
+  #ytz-head .ytz-txt{background:var(--yt-spec-badge-chip-background,#272727);color:inherit;border:0;border-radius:16px;padding:5px 12px;cursor:pointer;font:inherit;font-weight:500}
+  #ytz-head .ytz-txt:hover{background:var(--yt-spec-10-percent-layer,#3f3f3f)}
+  #ytz-head input[type=range]{width:80px;accent-color:#ff0033}
+  #ytz-head .ytz-val{font-variant-numeric:tabular-nums;min-width:2ch;font-size:12px}
+  #ytz-head select{background:var(--yt-spec-badge-chip-background,#272727);color:inherit;border:0;border-radius:8px;padding:5px 8px;font:inherit;cursor:pointer}
   #ytz-status{padding:10px 12px;font-size:13px;color:var(--yt-spec-text-secondary,#aaa)}
   #ytz-body{position:relative;max-height:${CFG.panelMaxHeight};overflow-y:auto}
   .ytz-row{display:grid;grid-template-columns:52px 1fr;gap:8px;padding:8px 12px;cursor:pointer;border-left:3px solid transparent}
@@ -312,15 +360,18 @@
   .ytz-en{font-size:14px;margin-top:4px;opacity:.9;font-family:Roboto,sans-serif}
   #ytz-panel.ytz-nopy .ytz-py{display:none}
   #ytz-panel.ytz-noen .ytz-en{display:none}
-  #ytz-panel.ytz-below{margin:12px 0}
+  #ytz-panel.ytz-below{margin:12px 0;background:var(--yt-spec-raised-background,#212121);border-color:transparent;box-shadow:inset 3px 0 0 #ff0033}
+  #ytz-panel.ytz-below #ytz-body{max-height:none}
+  html.ytz-nomast #masthead-container{transform:translateY(calc(-100% + 6px));transition:transform .2s ease .4s}
+  html.ytz-nomast #masthead-container:hover{transform:none;transition-delay:0s}
+  html.ytz-nomast #page-manager{margin-top:0!important}
   #ytz-panel.ytz-overlay{position:fixed;z-index:2147483647;display:flex;flex-direction:column;margin:0;min-width:280px;min-height:120px;resize:both;color:#f1f1f1;background:rgba(15,15,15,var(--ytz-alpha,.8));backdrop-filter:blur(6px);box-shadow:0 4px 24px rgba(0,0,0,.5)}
   #ytz-panel.ytz-overlay #ytz-head{cursor:move;touch-action:none;user-select:none}
   #ytz-panel.ytz-overlay #ytz-body{max-height:none;flex:1;min-height:0}
   #ytz-panel.ytz-overlay .ytz-ts,#ytz-panel.ytz-overlay .ytz-zy,#ytz-panel.ytz-overlay .ytz-py,#ytz-panel.ytz-overlay #ytz-status{color:#bbb}
   #ytz-panel.ytz-overlay .ytz-zy.ytz-poly{color:#e0b040}
   #ytz-panel.ytz-overlay .ytz-row:hover,#ytz-panel.ytz-overlay .ytz-row.ytz-active,#ytz-panel.ytz-overlay #ytz-head button:hover{background:rgba(255,255,255,.1)}
-  #ytz-alpha{display:none}
-  #ytz-panel.ytz-overlay #ytz-alpha{display:flex}
+  #ytz-panel:not(.ytz-overlay) .ytz-alpha-g{display:none}
   `;
   function injectCss() {
     if (document.getElementById('ytz-css')) return;
@@ -345,22 +396,29 @@
       panel.style.setProperty('--ytz-alpha', ui.alpha);
       const fs = document.fullscreenElement;
       (fs && fs !== document.documentElement && fs !== document.body ? fs : document.body).appendChild(panel);
+      syncBelow();
       return;
     }
-    const host = (ui.mode === 'below' && document.querySelector('#primary-inner #below, #primary #below, #primary-inner'))
+    // querySelector with a selector list returns the first match in document order, and #primary-inner
+    // comes before #below: ask for #below on its own, or the panel lands above the video
+    const host = (ui.mode === 'below' && (document.querySelector('ytd-watch-flexy #below') || document.querySelector('#below')))
       || document.querySelector('#secondary-inner') || document.querySelector('#secondary');
     if (ui.mode === 'below') panel.classList.add('ytz-below');
     host?.prepend(panel);
+    syncBelow();
   }
   function makeOverlayControls(panel, head) {
-    // placement selector + opacity slider (slider only shows in overlay mode)
-    const sel = document.createElement('select'); sel.title = 'where the panel lives';
-    for (const [v, l] of [['side', 'side'], ['below', 'below video'], ['overlay', 'overlay']]) { const o = document.createElement('option'); o.value = v; o.textContent = l; o.selected = v === ui.mode; sel.appendChild(o); }
-    sel.onchange = () => { ui.mode = sel.value; saveUi(); mountPanel(panel); };
-    const al = document.createElement('label'); al.id = 'ytz-alpha'; al.title = 'overlay opacity';
+    // placement: three icon buttons, one pressed; the opacity slider only shows in overlay mode
+    const modes = [['side', 'Beside the video'], ['below', 'Below the video (fits the screen, hides the YouTube header)'],
+      ['overlay', 'Floating overlay: drag the header, resize from the corner']];
+    const btns = modes.map(([m, title]) => {
+      const b = iconBtn(m, title, () => { ui.mode = m; saveUi(); mountPanel(panel); btns.forEach(x => x.setAttribute('aria-pressed', x === b)); });
+      b.setAttribute('aria-pressed', m === ui.mode); return b;
+    });
+    const al = document.createElement('label'); al.id = 'ytz-alpha'; al.title = 'Overlay opacity';
     const ar = document.createElement('input'); ar.type = 'range'; ar.min = 0.2; ar.max = 1; ar.step = 0.05; ar.value = ui.alpha;
     ar.oninput = () => { ui.alpha = +ar.value; panel.style.setProperty('--ytz-alpha', ui.alpha); saveUi(); };
-    al.append(document.createTextNode('α'), ar);
+    al.append(icon('alpha'), ar);
     // drag by the header (not by its controls)
     head.addEventListener('pointerdown', e => {
       if (!panel.classList.contains('ytz-overlay') || e.button !== 0 || e.target.closest('input,select,button,label')) return;
@@ -377,10 +435,32 @@
     ro.observe(panel);
     // inside the fullscreen player, don't let clicks/keys in the panel reach the player (play/pause, shortcuts)
     for (const ev of ['click', 'dblclick', 'mousedown', 'mouseup', 'keydown', 'keyup', 'keypress', 'contextmenu']) panel.addEventListener(ev, e => e.stopPropagation());
-    return [sel, al];
+    const alg = group(al); alg.classList.add('ytz-alpha-g');
+    return [group(...btns), alg];
   }
   // the overlay has to be re-parented into the fullscreen element to stay visible; YouTube swaps that element on every toggle
-  document.addEventListener('fullscreenchange', () => { const p = document.getElementById('ytz-panel'); if (p && ui.mode === 'overlay') mountPanel(p); });
+  document.addEventListener('fullscreenchange', () => { const p = document.getElementById('ytz-panel'); if (p && ui.mode === 'overlay') mountPanel(p); syncBelow(); });
+
+  // Below mode: YouTube's fixed masthead eats the top of the screen, so reading the panel used to mean
+  // scrolling the top of the video away. Hide the masthead (hover the top edge to get it back) and give
+  // the panel exactly the height left under the player, so video and panel fit with no page scroll.
+  function syncBelow() {
+    const panel = document.getElementById('ytz-panel');
+    const on = ui.mode === 'below' && location.pathname === '/watch' && !!panel?.isConnected && !document.fullscreenElement;
+    document.documentElement.classList.toggle('ytz-nomast', on);
+    const body = panel?.querySelector('#ytz-body');
+    if (!body) return;
+    if (!on) { body.style.height = ''; return; }
+    requestAnimationFrame(() => {
+      const top = body.getBoundingClientRect().top + scrollY;   // where the body starts with the page at the top
+      body.style.height = Math.max(160, innerHeight - top - 14) + 'px';
+    });
+  }
+  let fitTm;
+  const fitSoon = () => { clearTimeout(fitTm); fitTm = setTimeout(syncBelow, 120); };
+  window.addEventListener('resize', fitSoon);
+  // theater / default mode resize the player without resizing the window
+  waitFor(() => document.getElementById('movie_player')).then(p => p && new ResizeObserver(fitSoon).observe(p));
 
   function renderZh(text, D) {
     const wrap = document.createElement('div'); wrap.className = 'ytz-zh';
@@ -422,24 +502,35 @@
     const enMode0 = enModes.includes(CFG.englishDefault) ? CFG.englishDefault : enModes[0];
     const head = document.createElement('div'); head.id = 'ytz-head';
     const title = document.createElement('span'); title.className = 'ytz-title'; title.textContent = meta;
-    const mkToggle = (id, label, checked) => { const l = document.createElement('label'); const i = document.createElement('input');
-      i.type = 'checkbox'; i.id = id; i.checked = checked; l.append(i, document.createTextNode(label)); return l; };
-    const enSel = document.createElement('select'); enSel.id = 'ytz-enmode';
-    for (const m of enModes) { const o = document.createElement('option'); o.value = m; o.textContent = ({ native: 'native EN', translate: 'auto-translated', local: 'local MT' })[m] ?? m; o.selected = m === enMode0; enSel.appendChild(o); }
-    const mkBtn = (label, title, fn) => { const b = document.createElement('button'); b.textContent = label; b.title = title; b.onclick = fn; return b; };
+    const enName = (m) => ({ native: 'native EN', translate: 'auto-translated', local: 'local MT' })[m] ?? m;
+    const enSel = document.createElement('select'); enSel.title = 'Which English';
+    for (const m of enModes) { const o = document.createElement('option'); o.value = m; o.textContent = enName(m); o.selected = m === enMode0; enSel.appendChild(o); }
+    const showEnSel = () => { enSel.style.display = enSel.options.length > 1 ? '' : 'none'; };
+    showEnSel();
+    head.append(title);
     if (actions.sources?.length) {
-      const src = document.createElement('select'); src.title = 'transcript source';
+      const src = document.createElement('select'); src.title = 'Transcript source';
       for (const o of actions.sources) { const e = document.createElement('option'); e.value = o.value; e.textContent = o.label; e.selected = o.value === actions.source; src.appendChild(e); }
       src.onchange = e => actions.setSource(e.target.value);
-      head.append(title, src);
-    } else head.append(title);
-    // local MT only: unchecked = whole sentences (read better), checked = line by line (lines up with the Chinese)
-    const byLine = mkToggle('ytz-enunit', 'by line', CFG.translateUnit === 'line');
-    byLine.title = 'local MT: translate each caption line on its own instead of grouping into sentences';
-    head.append(mkToggle('ytz-top', 'zhuyin on top', CFG.zhuyinLayout === 'top'), mkToggle('ytz-py', 'pinyin', CFG.showPinyin), mkToggle('ytz-en', 'English', CFG.showEnglish), enSel,
-      ...(actions.retranslate ? [byLine] : []), mkToggle('ytz-follow', 'follow', CFG.follow),
-      mkBtn('↻', 'Refetch this video\'s transcript', actions.reload), mkBtn('✕ cache', 'Clear all cached transcripts and refetch', actions.clearAll), ...(actions.extra ?? []),
+      head.append(src);
+    }
+    // display toggles write back to CFG so a rebuilt panel (source switch, line length) keeps them
+    const tools = document.createElement('div'); tools.className = 'ytz-tools';
+    tools.append(
+      group(
+        toggleBtn('zyTop', 'Zhuyin above the characters', CFG.zhuyinLayout === 'top', v => { CFG.zhuyinLayout = v ? 'top' : 'side'; panel.classList.toggle('ytz-top', v); }),
+        toggleBtn('pinyin', 'Pinyin', CFG.showPinyin, v => { CFG.showPinyin = v; panel.classList.toggle('ytz-nopy', !v); }),
+        toggleBtn('lang', 'English', CFG.showEnglish, v => { CFG.showEnglish = v; panel.classList.toggle('ytz-noen', !v); }),
+        enSel,
+        // local MT only: off = whole sentences (read better), on = line by line (lines up with the Chinese)
+        actions.retranslate && toggleBtn('byLine', 'Local MT: translate line by line instead of whole sentences', CFG.translateUnit === 'line', v => actions.retranslate(v ? 'line' : 'sentence')),
+      ),
+      group(toggleBtn('follow', 'Follow playback', CFG.follow, v => { CFG.follow = v; }), ...(actions.extra ?? [])),
+      group(...(actions.asr ?? []),
+        iconBtn('refresh', 'Refetch this video\'s transcript', actions.reload),
+        Object.assign(iconBtn('trash', 'Clear all cached transcripts and translations, then refetch', actions.clearAll), { className: 'ytz-ib ytz-danger' })),
       ...makeOverlayControls(panel, head));
+    head.append(tools);
     panel.appendChild(head);
 
     const body = document.createElement('div'); body.id = 'ytz-body';
@@ -476,7 +567,7 @@
       if (newEn) {
         for (const [k, v] of Object.entries(newEn)) {
           if (v?.length && !en[k]?.length && ![...enSel.options].some(o => o.value === k)) {
-            const o = document.createElement('option'); o.value = k; o.textContent = ({ native: 'native EN', translate: 'auto-translated', local: 'local MT' })[k] ?? k; enSel.appendChild(o);
+            const o = document.createElement('option'); o.value = k; o.textContent = enName(k); enSel.appendChild(o); showEnSel();
             if (!en[enMode]?.length) { enMode = k; enSel.value = k; }
           }
         }
@@ -486,12 +577,7 @@
       if (newMeta !== undefined) title.textContent = newMeta;
     };
 
-    head.querySelector('#ytz-top').onchange = e => panel.classList.toggle('ytz-top', e.target.checked);
-    head.querySelector('#ytz-py').onchange = e => panel.classList.toggle('ytz-nopy', !e.target.checked);
-    head.querySelector('#ytz-en').onchange = e => panel.classList.toggle('ytz-noen', !e.target.checked);
-    head.querySelector('#ytz-follow').onchange = e => { CFG.follow = e.target.checked; };
-    head.querySelector('#ytz-enmode').onchange = e => applyEn(e.target.value);
-    if (actions.retranslate) head.querySelector('#ytz-enunit').onchange = e => actions.retranslate(e.target.checked ? 'line' : 'sentence');
+    enSel.onchange = e => applyEn(e.target.value);
 
     mountPanel(panel);
 
@@ -528,8 +614,9 @@
     const d = document.createElement('div'); d.id = 'ytz-status'; d.textContent = msg;
     if (buttons.length) {
       const row = document.createElement('div'); row.id = 'ytz-head'; row.style.borderTop = '1px solid var(--yt-spec-10-percent-layer,#333)'; row.style.borderBottom = 'none';
-      for (const [label, fn] of buttons) { const b = document.createElement('button'); b.textContent = label; b.onclick = fn; row.appendChild(b); }
-      row.append(...makeOverlayControls(panel, row));
+      for (const [label, fn] of buttons) { const b = document.createElement('button'); b.className = 'ytz-txt'; b.textContent = label; b.onclick = fn; row.appendChild(b); }
+      const tools = document.createElement('div'); tools.className = 'ytz-tools'; tools.style.marginLeft = 'auto';
+      tools.append(...makeOverlayControls(panel, row)); row.append(tools);
       panel.append(d, row);
     } else panel.appendChild(d);
   }
@@ -669,25 +756,38 @@
       clearAll: async () => { await cacheClear(); await mtClear(); currentVideo = null; init(); },
       ...srcSel,
     };
-    const retryBtn = ['retry', () => { currentVideo = null; init(); }];
+    // resume / retry go through /start: a plain poll never restarts a stopped or failed job
+    const resume = async () => { try { await fetch(`${CFG.asrServer}/job/${vid}/start`, { method: 'POST' }); } catch {} currentVideo = null; init(); };
+    const retryBtn = ['retry', resume];
+    // one button, two states: stop while the server works on it, resume once stopped
+    const asrBtn = iconBtn('stop', '', null);
+    const setRunning = (running) => {
+      asrBtn.replaceChildren(icon(running ? 'stop' : 'play'));
+      asrBtn.title = running ? 'Stop transcribing (keeps what is done)' : 'Resume transcribing';
+      asrBtn.setAttribute('aria-label', asrBtn.title);
+      asrBtn.onclick = running ? async () => { try { await fetch(`${CFG.asrServer}/job/${vid}/stop`, { method: 'POST' }); } catch {} } : resume;
+    };
+    setRunning(true);
+    actions.asr = [asrBtn];
     let shown = 0, lastJ = null;
     const owner = Symbol(vid);   // identifies panels built by this run (see makeLocalTranslator)
     const tr = makeLocalTranslator(owner);
     actions.retranslate = (unit) => tr.setUnit(unit);
     // line-length slider: re-chunks instantly from cached words and rebuilds the panel
     const mkSlider = () => {
-      const l = document.createElement('label'); l.title = 'max characters per line';
+      const l = document.createElement('label'); l.title = 'Max characters per line';
       const r = document.createElement('input'); r.type = 'range'; r.min = 6; r.max = 30; r.value = CFG.asrMaxChars;
-      const v = document.createElement('span'); v.textContent = 'len ' + CFG.asrMaxChars;
-      let tm; r.oninput = () => { CFG.asrMaxChars = +r.value; v.textContent = 'len ' + r.value; clearTimeout(tm);
+      const v = document.createElement('span'); v.className = 'ytz-val'; v.textContent = CFG.asrMaxChars;
+      let tm; r.oninput = () => { CFG.asrMaxChars = +r.value; v.textContent = r.value; clearTimeout(tm);
         tm = setTimeout(() => { if (lastJ?.words?.length) { shown = 0; document.getElementById('ytz-panel')?._cleanup?.(); document.getElementById('ytz-panel')?.remove(); render(lastJ); } }, 150); };
-      l.append(v, r); return l;
+      l.append(icon('width'), r, v); return l;
     };
     actions.extra = [mkSlider()];
+    const asrMeta = (j) => `ASR (whisper)${j.done ? '' : ` · ${j.status === 'stopped' ? 'stopped at ' : ''}${Math.round((j.progress ?? 0) * 100)}%`}`;
     const render = (j) => {
       const segs = j.words?.length ? chunkWords(j.words, D) : (j.segs ?? []);
       const en = { translate: j.en?.length ? alignByOverlap(segs, j.en) : null, native: null };
-      const meta = `ASR (whisper)${j.done ? '' : ` · ${Math.round((j.progress ?? 0) * 100)}%`}`;
+      const meta = asrMeta(j);
       buildPanel(segs, en, meta, D, actions);
       const p = document.getElementById('ytz-panel'); p._owner = owner; p._lastStart = segs.at(-1)?.start ?? -1;
       shown = segs.length;
@@ -697,12 +797,15 @@
       let j;
       try { const r = await fetch(url); j = await r.json(); }
       catch (e) { showStatus(`No usable captions, and the local ASR server at ${CFG.asrServer} is not reachable. Start asr_server.py, or set CFG.asrServer = null.`, [retryBtn]); return; }
-      if (j.status === 'error') { showStatus('ASR failed: ' + j.error, [retryBtn, ['retry (drop server cache)', actions.reload]]); return; }
+      if (j.status === 'error') { showStatus('ASR failed: ' + j.error, [retryBtn, ['start over', actions.reload]]); return; }
+      const stopped = j.status === 'stopped';
+      setRunning(!stopped);
+      if (j.done) { asrBtn.remove(); actions.asr = []; }
       lastJ = j;
       const segs = j.words?.length ? chunkWords(j.words, D) : (j.segs ?? []);
-      if (segs.length && (segs.length !== shown || j.done)) {
+      if (segs.length && (segs.length !== shown || j.done || stopped)) {
         const en = { translate: j.en?.length ? alignByOverlap(segs, j.en) : null, native: null };
-        const meta = `ASR (whisper)${j.done ? '' : ` · ${Math.round((j.progress ?? 0) * 100)}%`}`;
+        const meta = asrMeta(j);
         const panel = document.getElementById('ytz-panel');
         // word-chunked lines can change retroactively as more words arrive, so only append lines whose start is past everything shown
         const prevEnd = panel?._lastStart ?? -1;
@@ -711,10 +814,12 @@
         else { buildPanel(segs, en, meta, D, actions); const p = document.getElementById('ytz-panel'); p._owner = owner; p._lastStart = segs.at(-1)?.start ?? -1; }
         shown = segs.length;
         tr.update(segs, j.done);
+      } else if (!segs.length && stopped) {
+        showStatus('Local ASR stopped before the first line.', [['resume', resume]]);
       } else if (!segs.length) {
         showStatus(`Local ASR: ${j.status === 'paused' ? 'resuming' : j.status}${j.progress ? ` ${Math.round(j.progress * 100)}%` : ''}…`);
       }
-      if (j.done) return;
+      if (j.done || stopped) return;
       await sleep(CFG.asrPollMs);
     }
   }
@@ -787,6 +892,7 @@
     } catch (e) { console.error('[yt-zhuyin]', e); showStatus('Failed: ' + e.message, [retryBtn, whisperBtn]); }
   }
 
-  window.addEventListener('yt-navigate-finish', () => { currentVideo = null; init(); });
+  // syncBelow first: leaving /watch must bring YouTube's header back
+  window.addEventListener('yt-navigate-finish', () => { syncBelow(); currentVideo = null; init(); });
   init();
 })();

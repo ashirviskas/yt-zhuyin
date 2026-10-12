@@ -11,3 +11,6 @@ venv/
 .idea/
 .vscode/
 .ruff_cache/
+
+# scratch: screenshots, test caches
+tmp/
