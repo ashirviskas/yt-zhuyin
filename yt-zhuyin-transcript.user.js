@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube 注音 transcript (zh-TW + zhuyin, pinyin optional, English)
 // @namespace    local.yt-zhuyin
-// @version      0.8.2
+// @version      0.8.3
 // @description  Side panel: traditional Chinese captions segmented into words with zhuyin from a Taiwan (McBopomofo) dictionary, optional pinyin derived from the zhuyin, English line, click-to-seek.
 // @match        https://www.youtube.com/*
 // @homepageURL  https://github.com/ashirviskas/yt-zhuyin
@@ -350,12 +350,23 @@
   .ytz-ts{font-size:12px;color:var(--yt-spec-text-secondary,#aaa);padding-top:6px;font-variant-numeric:tabular-nums}
   .ytz-zh{line-height:1.15}
   .ytz-word{display:inline-flex;align-items:center;margin:0 ${CFG.wordGap ? 7 : 2}px 4px 0;vertical-align:middle;border-bottom:1px dotted transparent}
+  /* every cell as tall as the longest column (˙ + 3 symbols), so word boxes and their underlines line up */
+  .ytz-cc{height:calc(${CFG.zhuyinFontSize} * 3.4)}
+  #ytz-panel.ytz-top .ytz-cc{height:auto}
   #ytz-panel.ytz-wordgap .ytz-word{border-bottom-color:var(--yt-spec-10-percent-layer,#444)}
   .ytz-cc{display:inline-flex;align-items:center;margin-right:3px}
   .ytz-han{font-size:${CFG.hanFontSize};line-height:1}
-  .ytz-zy{writing-mode:vertical-lr;text-orientation:upright;font-size:${CFG.zhuyinFontSize};line-height:1;margin-left:2px;color:var(--yt-spec-text-secondary,#aaa);white-space:nowrap;font-family:"Noto Sans TC","PingFang TC","BopomofoRuby","Microsoft JhengHei",sans-serif}
+  .ytz-zy{display:inline-flex;align-items:flex-end;font-size:${CFG.zhuyinFontSize};line-height:1;margin-left:2px;color:var(--yt-spec-text-secondary,#aaa);white-space:nowrap;font-family:"Noto Sans TC","PingFang TC","BopomofoRuby","Microsoft JhengHei",sans-serif}
+  .ytz-col{display:inline-flex;flex-direction:column;align-items:center}
+  .ytz-zs{writing-mode:vertical-lr;text-orientation:upright}
+  .ytz-dot{width:.32em;height:.32em;border-radius:50%;background:currentColor;margin-bottom:.2em}
+  .ytz-tn{font-size:2em;font-weight:700;line-height:.5;width:.45em;margin-left:-.05em}   /* line box = one symbol: sits beside the last one */
   #ytz-panel.ytz-top .ytz-cc{flex-direction:column-reverse;align-items:center;margin-right:6px}
-  #ytz-panel.ytz-top .ytz-zy{writing-mode:horizontal-tb;text-orientation:mixed;font-size:${CFG.zhuyinTopFontSize};margin:0 0 2px 0;letter-spacing:.5px}
+  #ytz-panel.ytz-top .ytz-zy{align-items:center;font-size:${CFG.zhuyinTopFontSize};margin:0 0 2px 0;letter-spacing:.5px}
+  #ytz-panel.ytz-top .ytz-zs{writing-mode:horizontal-tb;text-orientation:mixed}
+  #ytz-panel.ytz-top .ytz-col{flex-direction:row}
+  #ytz-panel.ytz-top .ytz-dot{margin:0 .2em 0 0}
+  #ytz-panel.ytz-top .ytz-tn{font-size:1.4em;line-height:.7;width:auto;margin:0 0 0 .05em}
   .ytz-zy.ytz-poly{color:#e0b040}
   .ytz-zy.ytz-missing{color:#ff5555}
   .ytz-other{font-size:${CFG.hanFontSize};line-height:1;vertical-align:middle;margin-right:2px}
@@ -475,6 +486,21 @@
   // theater / default mode resize the player without resizing the window
   waitFor(() => document.getElementById('movie_player')).then(p => p && new ResizeObserver(fitSoon).observe(p));
 
+  // Textbook layout: the symbols stack in a column with the neutral-tone dot centred above it, and ˊ ˇ ˋ sit
+  // in their own slot to the right, level with the last symbol. The dot is drawn, not the ˙ glyph, which
+  // renders as an off-centre speck in vertical text.
+  function zhuyinParts(z) {
+    const dot = z.startsWith('˙'); if (dot) z = z.slice(1);
+    const tone = 'ˊˇˋ'.includes(z.at(-1)) ? z.at(-1) : '';
+    const col = document.createElement('span'); col.className = 'ytz-col';
+    if (dot) { const d = document.createElement('span'); d.className = 'ytz-dot'; col.appendChild(d); }
+    const syms = document.createElement('span'); syms.className = 'ytz-zs'; syms.textContent = tone ? z.slice(0, -1) : z;
+    col.appendChild(syms);
+    if (!tone) return [col];
+    const t = document.createElement('span'); t.className = 'ytz-tn'; t.textContent = tone;
+    return [col, t];
+  }
+
   function renderZh(text, D) {
     const wrap = document.createElement('div'); wrap.className = 'ytz-zh';
     const py = [];
@@ -490,7 +516,7 @@
         const han = document.createElement('span'); han.className = 'ytz-han'; han.textContent = ch;
         const zy = document.createElement('span'); zy.className = 'ytz-zy';
         const z = w.zy[i];
-        if (z) { zy.textContent = normZhuyin(z); py.push(zhuyinToPinyin(z)); }
+        if (z) { zy.append(...zhuyinParts(normZhuyin(z))); py.push(zhuyinToPinyin(z)); }
         else { zy.textContent = '?'; zy.classList.add('ytz-missing'); }
         if (w.alts && w.alts.length > 1) { zy.classList.add('ytz-poly'); cc.title = 'other readings: ' + w.alts.slice(1).map(normZhuyin).join(' / '); }
         cc.append(han, zy); word.appendChild(cc);
