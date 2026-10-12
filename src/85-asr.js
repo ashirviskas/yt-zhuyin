@@ -28,7 +28,7 @@
       const l = document.createElement('label'); l.title = 'Max characters per line';
       const r = document.createElement('input'); r.type = 'range'; r.min = 6; r.max = 30; r.value = CFG.asrMaxChars;
       const v = document.createElement('span'); v.className = 'ytz-val'; v.textContent = CFG.asrMaxChars;
-      let tm; r.oninput = () => { CFG.asrMaxChars = +r.value; v.textContent = r.value; clearTimeout(tm);
+      let tm; r.oninput = () => { setPref('asrMaxChars', +r.value); v.textContent = r.value; clearTimeout(tm);
         tm = setTimeout(() => { if (lastJ?.words?.length) { shown = 0; document.getElementById('ytz-panel')?._cleanup?.(); document.getElementById('ytz-panel')?.remove(); render(lastJ); } }, 150); };
       l.append(icon('width'), r, v); return l;
     };

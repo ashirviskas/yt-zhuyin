@@ -63,7 +63,7 @@
     };
     // Re-translate everything under a different unit. Sentence mode reads better;
     // line mode lines up 1:1 with the Chinese.
-    const setUnit = (unit) => { CFG.translateUnit = unit; reset(); push(); update(lastSegs, lastDone); };
+    const setUnit = (unit) => { setPref('translateUnit', unit); reset(); push(); update(lastSegs, lastDone); };
     return { reset, update, setUnit };
   }
 

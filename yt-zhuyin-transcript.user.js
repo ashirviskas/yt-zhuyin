@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube 注音 transcript (zh-TW + zhuyin, pinyin optional, English)
 // @namespace    local.yt-zhuyin
-// @version      0.8.0
+// @version      0.8.1
 // @description  Side panel: traditional Chinese captions segmented into words with zhuyin from a Taiwan (McBopomofo) dictionary, optional pinyin derived from the zhuyin, English line, click-to-seek.
 // @match        https://www.youtube.com/*
 // @homepageURL  https://github.com/ashirviskas/yt-zhuyin
@@ -386,6 +386,10 @@
   const ui = Object.assign({ mode: CFG.panelMode, x: 24, y: 80, w: 560, h: 360, alpha: 0.8 },
     (() => { try { return JSON.parse(localStorage.getItem(UI_KEY)) ?? {}; } catch { return {}; } })());
   const saveUi = () => { try { localStorage.setItem(UI_KEY, JSON.stringify(ui)); } catch {} };
+  // display toggles live in the same localStorage entry; CFG holds the defaults until the first change
+  const PREFS = ['zhuyinLayout', 'showPinyin', 'showEnglish', 'follow', 'translateUnit', 'asrMaxChars'];
+  for (const k of PREFS) if (k in ui) CFG[k] = ui[k];
+  const setPref = (k, v) => { CFG[k] = v; ui[k] = v; saveUi(); };
   function mountPanel(panel) {
     panel.classList.remove('ytz-below', 'ytz-overlay');
     panel.style.cssText = '';
@@ -518,14 +522,14 @@
     const tools = document.createElement('div'); tools.className = 'ytz-tools';
     tools.append(
       group(
-        toggleBtn('zyTop', 'Zhuyin above the characters', CFG.zhuyinLayout === 'top', v => { CFG.zhuyinLayout = v ? 'top' : 'side'; panel.classList.toggle('ytz-top', v); }),
-        toggleBtn('pinyin', 'Pinyin', CFG.showPinyin, v => { CFG.showPinyin = v; panel.classList.toggle('ytz-nopy', !v); }),
-        toggleBtn('lang', 'English', CFG.showEnglish, v => { CFG.showEnglish = v; panel.classList.toggle('ytz-noen', !v); }),
+        toggleBtn('zyTop', 'Zhuyin above the characters', CFG.zhuyinLayout === 'top', v => { setPref('zhuyinLayout', v ? 'top' : 'side'); panel.classList.toggle('ytz-top', v); }),
+        toggleBtn('pinyin', 'Pinyin', CFG.showPinyin, v => { setPref('showPinyin', v); panel.classList.toggle('ytz-nopy', !v); }),
+        toggleBtn('lang', 'English', CFG.showEnglish, v => { setPref('showEnglish', v); panel.classList.toggle('ytz-noen', !v); }),
         enSel,
         // local MT only: off = whole sentences (read better), on = line by line (lines up with the Chinese)
         actions.retranslate && toggleBtn('byLine', 'Local MT: translate line by line instead of whole sentences', CFG.translateUnit === 'line', v => actions.retranslate(v ? 'line' : 'sentence')),
       ),
-      group(toggleBtn('follow', 'Follow playback', CFG.follow, v => { CFG.follow = v; }), ...(actions.extra ?? [])),
+      group(toggleBtn('follow', 'Follow playback', CFG.follow, v => setPref('follow', v)), ...(actions.extra ?? [])),
       group(...(actions.asr ?? []),
         iconBtn('refresh', 'Refetch this video\'s transcript', actions.reload),
         Object.assign(iconBtn('trash', 'Clear all cached transcripts and translations, then refetch', actions.clearAll), { className: 'ytz-ib ytz-danger' })),
@@ -744,7 +748,7 @@
     };
     // Re-translate everything under a different unit. Sentence mode reads better;
     // line mode lines up 1:1 with the Chinese.
-    const setUnit = (unit) => { CFG.translateUnit = unit; reset(); push(); update(lastSegs, lastDone); };
+    const setUnit = (unit) => { setPref('translateUnit', unit); reset(); push(); update(lastSegs, lastDone); };
     return { reset, update, setUnit };
   }
 
@@ -778,7 +782,7 @@
       const l = document.createElement('label'); l.title = 'Max characters per line';
       const r = document.createElement('input'); r.type = 'range'; r.min = 6; r.max = 30; r.value = CFG.asrMaxChars;
       const v = document.createElement('span'); v.className = 'ytz-val'; v.textContent = CFG.asrMaxChars;
-      let tm; r.oninput = () => { CFG.asrMaxChars = +r.value; v.textContent = r.value; clearTimeout(tm);
+      let tm; r.oninput = () => { setPref('asrMaxChars', +r.value); v.textContent = r.value; clearTimeout(tm);
         tm = setTimeout(() => { if (lastJ?.words?.length) { shown = 0; document.getElementById('ytz-panel')?._cleanup?.(); document.getElementById('ytz-panel')?.remove(); render(lastJ); } }, 150); };
       l.append(icon('width'), r, v); return l;
     };

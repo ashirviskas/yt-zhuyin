@@ -65,6 +65,10 @@
   const ui = Object.assign({ mode: CFG.panelMode, x: 24, y: 80, w: 560, h: 360, alpha: 0.8 },
     (() => { try { return JSON.parse(localStorage.getItem(UI_KEY)) ?? {}; } catch { return {}; } })());
   const saveUi = () => { try { localStorage.setItem(UI_KEY, JSON.stringify(ui)); } catch {} };
+  // display toggles live in the same localStorage entry; CFG holds the defaults until the first change
+  const PREFS = ['zhuyinLayout', 'showPinyin', 'showEnglish', 'follow', 'translateUnit', 'asrMaxChars'];
+  for (const k of PREFS) if (k in ui) CFG[k] = ui[k];
+  const setPref = (k, v) => { CFG[k] = v; ui[k] = v; saveUi(); };
   function mountPanel(panel) {
     panel.classList.remove('ytz-below', 'ytz-overlay');
     panel.style.cssText = '';
@@ -197,14 +201,14 @@
     const tools = document.createElement('div'); tools.className = 'ytz-tools';
     tools.append(
       group(
-        toggleBtn('zyTop', 'Zhuyin above the characters', CFG.zhuyinLayout === 'top', v => { CFG.zhuyinLayout = v ? 'top' : 'side'; panel.classList.toggle('ytz-top', v); }),
-        toggleBtn('pinyin', 'Pinyin', CFG.showPinyin, v => { CFG.showPinyin = v; panel.classList.toggle('ytz-nopy', !v); }),
-        toggleBtn('lang', 'English', CFG.showEnglish, v => { CFG.showEnglish = v; panel.classList.toggle('ytz-noen', !v); }),
+        toggleBtn('zyTop', 'Zhuyin above the characters', CFG.zhuyinLayout === 'top', v => { setPref('zhuyinLayout', v ? 'top' : 'side'); panel.classList.toggle('ytz-top', v); }),
+        toggleBtn('pinyin', 'Pinyin', CFG.showPinyin, v => { setPref('showPinyin', v); panel.classList.toggle('ytz-nopy', !v); }),
+        toggleBtn('lang', 'English', CFG.showEnglish, v => { setPref('showEnglish', v); panel.classList.toggle('ytz-noen', !v); }),
         enSel,
         // local MT only: off = whole sentences (read better), on = line by line (lines up with the Chinese)
         actions.retranslate && toggleBtn('byLine', 'Local MT: translate line by line instead of whole sentences', CFG.translateUnit === 'line', v => actions.retranslate(v ? 'line' : 'sentence')),
       ),
-      group(toggleBtn('follow', 'Follow playback', CFG.follow, v => { CFG.follow = v; }), ...(actions.extra ?? [])),
+      group(toggleBtn('follow', 'Follow playback', CFG.follow, v => setPref('follow', v)), ...(actions.extra ?? [])),
       group(...(actions.asr ?? []),
         iconBtn('refresh', 'Refetch this video\'s transcript', actions.reload),
         Object.assign(iconBtn('trash', 'Clear all cached transcripts and translations, then refetch', actions.clearAll), { className: 'ytz-ib ytz-danger' })),
